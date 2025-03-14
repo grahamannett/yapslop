@@ -1,0 +1,11 @@
+[project]
+name = "yapslop"
+version = "0.0.1"
+description = "yapslop generator"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
