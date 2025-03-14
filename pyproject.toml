@@ -1,11 +1,13 @@
 [project]
-name = "yapslop"
-version = "0.0.1"
-description = "yapslop generator"
-readme = "README.md"
-requires-python = ">=3.10"
-dependencies = []
+    name            = "yapslop"
+    version         = "0.0.1"
+    description     = "A minimal yapslop generator"
+    readme          = "readme.md"
+    requires-python = ">=3.10"
+    dependencies    = ["httpx>=0.28.1"]
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+    requires      = ["setuptools>=61.0"]
+    build-backend = "setuptools.build_meta"
+[tool.setuptools]
+    packages = ["csm"]
