@@ -1,12 +1,17 @@
+import asyncio
 import os
 import random
-import asyncio
 from dataclasses import dataclass
+
 import httpx
 import torch
 import torchaudio
 from huggingface_hub import hf_hub_download
-from csm.generator import load_csm_1b, Segment
+
+from csm.generator import Segment, load_csm_1b
+
+MessageType = list[dict[str, str]]
+
 
 system_prompt = """
 You are simulating a conversation between the following characters:
@@ -92,38 +97,17 @@ class ConvoTurn:
         return Segment(speaker=self.speaker.speaker_id, text=self.text, audio=audio)
 
 
+@dataclass
 class TextModelProvider:
     """Base class for model providers, switch to using pydantic-ai/vllm/etc later"""
 
-    async def generate_text(self, **kwargs) -> str:
-        """Generate text from the model."""
-        raise NotImplementedError("Subclasses must implement generate_text")
-
-
-@dataclass
-class OllamaTextProvider(TextModelProvider):
     client: httpx.AsyncClient
     model_name: str
 
     async def generate_text(
-        self,
-        messages: list[dict[str, str]],
-        max_tokens: int = 300,
-        temperature: float = 0.7,
-        **kwargs,
+        self, messages: MessageType, max_tokens: int = 300, temperature: float = 0.7, **kwargs
     ) -> str:
-        """
-        Generate text using Ollama's API.
-
-        Args:
-            messages: List of message dictionaries (role, content)
-            max_tokens: Maximum tokens to generate
-            temperature: Temperature setting for generation
-            **kwargs: Additional Ollama-specific parameters
-
-        Returns:
-            Generated text string
-        """
+        """Generate text using Ollama's API."""
 
         response = await self.client.post(
             "/chat/completions",
@@ -190,14 +174,8 @@ class AudioProvider:
 
         return audio
 
-    def save_audio(self, audio, file_path):
-        """
-        Save the generated audio to a file.
-
-        Args:
-            audio: Audio tensor to save
-            file_path: Path to save the audio file
-        """
+    def save_audio(self, audio: torch.Tensor, file_path: str):
+        """Save the generated audio to a file."""
         torchaudio.save(file_path, audio.unsqueeze(0).cpu(), self.sample_rate)
 
 
@@ -215,6 +193,7 @@ class ConvoManager:
         temperature: float = 0.7,
         system_prompt: str | None = None,
         audio_output_dir: str = "audio_output",
+        limit_context_turns: int | None = None,
     ):
         """
         Initialize the conversation manager.
@@ -239,6 +218,7 @@ class ConvoManager:
         self.system_prompt = system_prompt or make_system_prompt(speakers)
 
         self.history: list[ConvoTurn] = []
+        self.limit_context_turns = limit_context_turns
 
     def _setup_audio_provider(self):
         if self.audio_output_dir:
@@ -288,13 +268,14 @@ class ConvoManager:
         if not self.history:
             return random.choice(self.speakers)
 
-        last_speaker = self.history[-1].speaker
-        available_speakers = [s for s in self.speakers if s != last_speaker]
-
-        return random.choice(available_speakers)
+        # Avoid consecutive turns by the same speaker
+        return random.choice([s for s in self.speakers if s != self.history[-1].speaker])
 
     async def generate_turn(
-        self, speaker: Speaker | None = None, generate_audio: bool = True
+        self,
+        generate_audio: bool = True,
+        speaker: Speaker | None = None,
+        text: str | None = None,
     ) -> ConvoTurn:
         """
         Generate the next turn in the conversation.
@@ -307,73 +288,35 @@ class ConvoManager:
             ConvoTurn object containing the generated text and optionally audio
         """
         speaker = speaker or self.select_next_speaker()
-        messages = self._create_prompt_for_next_turn(speaker)
 
-        # Generate text using the provider
-        generated_text = await self.text_provider.generate_text(
-            messages=messages, max_tokens=self.max_tokens, temperature=self.temperature
-        )
+        if text is None:
+            messages = self._create_prompt_for_next_turn(speaker)
 
-        # Clean the response - remove speaker prefix if model included it
-        if generated_text.startswith(f"{speaker.name}:"):
-            generated_text = generated_text[len(f"{speaker.name}:") :].strip()
+            # Generate text using the provider
+            text = await self.text_provider.generate_text(
+                messages=messages, max_tokens=self.max_tokens, temperature=self.temperature
+            )
 
-        # Create the turn with text
-        turn = ConvoTurn(speaker=speaker, text=generated_text)
+            if text.startswith(f"{speaker.name}:"):
+                text = text[len(f"{speaker.name}:") :].strip()
+
+        turn = ConvoTurn(speaker=speaker, text=text)
         self.history.append(turn)
 
-        # Generate audio if requested and we have an audio generator
         if generate_audio and self.audio_provider:
             # Get recent context turns with audio (limit to 3 for performance)
-            context_turns = [t for t in self.history[:-1] if t.audio is not None][-3:]
+            context_turns = [t for t in self.history[:-1] if t.audio is not None]
 
-            # Generate audio
+            if self.limit_context_turns:
+                context_turns = context_turns[-self.limit_context_turns :]
+
             audio = self.audio_provider.generate_audio(
-                text=generated_text,
+                text=text,
                 speaker_id=speaker.speaker_id,
                 context_turns=context_turns,
             )
 
             turn.audio = audio
-
-            turn = self._audio_provider_turn_end(turn)
-
-        return turn
-
-    async def add_initial_phrase(
-        self,
-        initial_phrase: str,
-        speaker: Speaker | None = None,
-        generate_audio: bool = True,
-    ) -> ConvoTurn:
-        """
-        Add an initial phrase to the conversation to seed the dialogue.
-
-        Args:
-            initial_phrase: The text to start the conversation with
-            speaker: Optional speaker for the initial phrase (randomly selected if None)
-            generate_audio: Whether to generate audio for this phrase
-
-        Returns:
-            The ConvoTurn object created for the initial phrase
-        """
-        if speaker is None:
-            speaker = random.choice(self.speakers)
-
-        # Create the turn with text
-        turn = ConvoTurn(speaker=speaker, text=initial_phrase)
-        self.history.append(turn)
-
-        # Generate audio if requested and we have an audio generator
-        if generate_audio and self.audio_provider:
-            # Generate audio without context for the first turn
-            audio = self.audio_provider.generate_audio(
-                text=initial_phrase, speaker_id=speaker.speaker_id
-            )
-
-            # Update turn with audio
-            turn.audio = audio
-
             turn = self._audio_provider_turn_end(turn)
 
         return turn
@@ -400,12 +343,12 @@ class ConvoManager:
         """
         # Add initial phrase if provided
         if initial_phrase:
-            turn = await self.add_initial_phrase(initial_phrase, initial_speaker, generate_audio)
+            turn = await self.generate_turn(generate_audio, initial_speaker, text=initial_phrase)
             yield turn
 
         # Generate the rest of the conversation one turn at a time
         for _ in range(num_turns):
-            turn = await self.generate_turn(generate_audio=generate_audio)
+            turn = await self.generate_turn(generate_audio)
             yield turn
 
     async def generate_conversation(
@@ -426,6 +369,62 @@ class ConvoManager:
             List of ConvoTurn objects
         """
         return [turn async for turn in self.generate_conversation_stream(*args, **kwargs)]
+
+    def save_combined_audio(
+        self,
+        output_path: str,
+        turns: list[ConvoTurn] | None = None,
+        add_silence_ms: int = 500,
+    ) -> str:
+        """
+        Combine audio from multiple conversation turns into a single audio file.
+
+        Args:
+            turns: List of ConvoTurn objects with audio (defaults to self.history)
+            output_path: Path to save the combined audio file
+            add_silence_ms: Milliseconds of silence to add between turns
+
+        Returns:
+            Path to the saved audio file
+        """
+        # Use provided turns or conversation history
+        turns = turns or self.history
+
+        # Filter turns to only include those with audio
+        audio_turns = [turn for turn in turns if turn.audio is not None]
+
+        if not audio_turns:
+            raise ValueError("No turns with audio found")
+
+        # Get sample rate from the audio provider
+        sample_rate = self.audio_provider.sample_rate
+
+        # Calculate silence samples
+        silence_samples = int(sample_rate * add_silence_ms / 1000)
+        silence = torch.zeros(silence_samples, device=self.audio_provider.device)
+
+        # Combine audio tensors with silence between them
+        combined_audio = []
+        for turn in audio_turns:
+            # Add the turn's audio
+            combined_audio.append(turn.audio)
+            # Add silence after each turn except the last
+            if turn != audio_turns[-1]:
+                combined_audio.append(silence)
+        # Concatenate all audio tensors along the time dimension
+        final_audio = torch.cat(combined_audio)
+
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+
+        # Save the combined audio
+        torchaudio.save(
+            output_path,
+            final_audio.unsqueeze(0).cpu(),  # Add channel dimension and ensure on CPU
+            sample_rate,
+        )
+
+        return output_path
 
 
 # Example usage demonstration
@@ -457,7 +456,7 @@ async def demo():
 
     # Create the text provider (using Ollama by default)
     async with httpx.AsyncClient(base_url="http://localhost:11434/v1") as client:
-        text_provider = OllamaTextProvider(client=client, model_name="gemma3:1b")
+        text_provider = TextModelProvider(client=client, model_name="gemma3:1b")
 
         # Create the audio generator (if you want audio)
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -468,7 +467,7 @@ async def demo():
             speakers=speakers,
             text_provider=text_provider,
             audio_provider=audio_provider,
-            audio_output_dir="audio_output",
+            # audio_output_dir="audio_output",
         )
 
         # Example using the streaming generator
@@ -480,7 +479,7 @@ async def demo():
 
         # Stream each turn as it's generated
         async for turn in manager.generate_conversation_stream(
-            num_turns=5,
+            num_turns=3,
             initial_phrase=initial_phrase,
             initial_speaker=initial_speaker,
         ):
@@ -492,6 +491,13 @@ async def demo():
             # await asyncio.sleep(1)
 
         print("-" * 50)
+
+    # Save combined audio
+    combined_audio_path = manager.save_combined_audio(
+        output_path="full_conversation.wav",
+        add_silence_ms=700,  # Add 700ms silence between turns
+    )
+    print(f"Combined audio saved to: {combined_audio_path}")
 
 
 if __name__ == "__main__":
