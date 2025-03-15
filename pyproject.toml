@@ -1,16 +1,32 @@
 [project]
-    name            = "yapslop"
-    version         = "0.0.1"
-    description     = "A minimal yapslop generator"
-    readme          = "readme.md"
+    name = "yapslop"
+    version = "0.0.1"
+    description = "A minimal yapslop generator"
+    readme = "readme.md"
     requires-python = ">=3.10"
-    dependencies    = ["httpx>=0.28.1"]
+    dependencies = [
+        "httpx>=0.28.1",
+        "huggingface-hub==0.28.1",
+        "moshi==0.2.2",
+        "silentcipher",
+        "tokenizers==0.21.0",
+        "torch==2.4.0",
+        "torchao==0.9.0",
+        "torchaudio==2.4.0",
+        "torchtune==0.4.0",
+        "transformers==4.49.0",
+    ]
 
 [build-system]
     requires      = ["setuptools>=61.0"]
     build-backend = "setuptools.build_meta"
-[tool.setuptools]
-    packages = ["csm"]
+
+
+[tool.setuptools.packages]
+    find = { where = ["packages", "src"] }
 
 [tool.ruff]
     line-length = 100
+
+[tool.uv.sources]
+    silentcipher = { git = "https://github.com/SesameAILabs/silentcipher", rev = "master" }
