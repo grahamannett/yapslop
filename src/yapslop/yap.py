@@ -1,7 +1,8 @@
 import asyncio
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import ClassVar
 
 import httpx
 import torch
@@ -13,7 +14,8 @@ from csm.generator import Segment, load_csm_1b
 MessageType = list[dict[str, str]]
 
 
-system_prompt = """
+# Define the system prompt template as a module constant
+SYSTEM_PROMPT_TEMPLATE = """
 You are simulating a conversation between the following characters:
 {speakers_desc}
 
@@ -34,7 +36,7 @@ def load_audio(audio_path: str, new_freq: int = 24_000) -> torch.Tensor:
 
 
 def make_system_prompt(speakers: list["Speaker"]) -> str:
-    def make_char_prompt(speaker: "Speaker") -> str:
+    def format_speaker(speaker: "Speaker") -> str:
         prompt = f"{speaker.name}"
         if speaker.description:
             prompt += f" ({speaker.description})"
@@ -44,7 +46,8 @@ def make_system_prompt(speakers: list["Speaker"]) -> str:
             prompt += f"\nSpeaking style: {speaker.speaking_style}"
         return prompt
 
-    return system_prompt.format(speakers_desc="\n".join([make_char_prompt(s) for s in speakers]))
+    speakers_desc = "\n\n".join(format_speaker(speaker) for speaker in speakers)
+    return SYSTEM_PROMPT_TEMPLATE.format(speakers_desc=speakers_desc)
 
 
 def get_conversation_as_string(history: list["ConvoTurn"]) -> str:
@@ -53,16 +56,21 @@ def get_conversation_as_string(history: list["ConvoTurn"]) -> str:
 
 @dataclass
 class Speaker:
-    """
-    Represents a participant in a conversation.
-    """
+    """Participant in a conversation."""
+
+    _next_id: ClassVar[int] = 0
 
     name: str
     description: str = ""
     personality: str = ""
     speaking_style: str = ""
-    # Add speaker_id for CSM model integration
-    speaker_id: int = 0
+    # Make speaker_id a proper field with a default_factory to get the next ID
+    speaker_id: int = field(default_factory=lambda: Speaker._get_next_id())
+
+    @classmethod
+    def _get_next_id(cls) -> int:
+        cls._next_id += 1
+        return cls._next_id - 1
 
     def __str__(self) -> str:
         return f"{self.name}"
@@ -128,7 +136,7 @@ class TextModelProvider:
 @dataclass
 class AudioProvider:
     repo_id: str = "sesame/csm-1b"
-    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    device: str = "cuda"
 
     def __post_init__(self):
         self.model_path = hf_hub_download(repo_id=self.repo_id, filename="ckpt.pt")
@@ -164,7 +172,6 @@ class AudioProvider:
                 if turn.audio is not None:
                     context_segments.append(turn.to_segment())
 
-        # Generate the audio using the CSM model
         audio = self.generator.generate(
             text=text,
             speaker=speaker_id,
@@ -192,7 +199,7 @@ class ConvoManager:
         max_tokens: int = 300,
         temperature: float = 0.7,
         system_prompt: str | None = None,
-        audio_output_dir: str = "audio_output",
+        audio_output_dir: str | None = None,  # = "audio_output",
         limit_context_turns: int | None = None,
     ):
         """
@@ -321,7 +328,7 @@ class ConvoManager:
 
         return turn
 
-    async def generate_conversation_stream(
+    async def generate_convo_text_stream(
         self,
         num_turns: int,
         initial_phrase: str | None = None,
@@ -351,24 +358,9 @@ class ConvoManager:
             turn = await self.generate_turn(generate_audio)
             yield turn
 
-    async def generate_conversation(
-        self,
-        *args,
-        **kwargs,
-    ) -> list[ConvoTurn]:
-        """
-        Generate a conversation with the specified number of turns.
-
-        Args:
-            num_turns: Number of turns to generate
-            initial_phrase: Optional text to start the conversation with
-            initial_speaker: Optional speaker for the initial phrase
-            generate_audio: Whether to generate audio for each turn
-
-        Returns:
-            List of ConvoTurn objects
-        """
-        return [turn async for turn in self.generate_conversation_stream(*args, **kwargs)]
+    async def generate_convo_text(self, *args, **kwargs) -> list[ConvoTurn]:
+        """Generate a conversation with the specified number of turns."""
+        return [turn async for turn in self.generate_convo_text_stream(*args, **kwargs)]
 
     def save_combined_audio(
         self,
@@ -380,39 +372,39 @@ class ConvoManager:
         Combine audio from multiple conversation turns into a single audio file.
 
         Args:
-            turns: List of ConvoTurn objects with audio (defaults to self.history)
             output_path: Path to save the combined audio file
+            turns: List of ConvoTurn objects with audio (defaults to self.history)
             add_silence_ms: Milliseconds of silence to add between turns
 
         Returns:
             Path to the saved audio file
         """
+        if self.audio_provider is None:
+            raise ValueError("Audio provider not initialized")
+
         # Use provided turns or conversation history
         turns = turns or self.history
 
-        # Filter turns to only include those with audio
-        audio_turns = [turn for turn in turns if turn.audio is not None]
+        # Extract audio tensors from turns that have audio
+        audio_tensors = [turn.audio for turn in turns if turn.audio is not None]
 
-        if not audio_turns:
+        if not audio_tensors:
             raise ValueError("No turns with audio found")
 
-        # Get sample rate from the audio provider
-        sample_rate = self.audio_provider.sample_rate
-
         # Calculate silence samples
-        silence_samples = int(sample_rate * add_silence_ms / 1000)
+        silence_samples = int(self.audio_provider.sample_rate * add_silence_ms / 1000)
         silence = torch.zeros(silence_samples, device=self.audio_provider.device)
 
         # Combine audio tensors with silence between them
-        combined_audio = []
-        for turn in audio_turns:
-            # Add the turn's audio
-            combined_audio.append(turn.audio)
-            # Add silence after each turn except the last
-            if turn != audio_turns[-1]:
-                combined_audio.append(silence)
+        combined_tensors = []
+        for i, audio in enumerate(audio_tensors):
+            combined_tensors.append(audio)
+            # Add silence after each segment except the last
+            if i < len(audio_tensors) - 1:
+                combined_tensors.append(silence)
+
         # Concatenate all audio tensors along the time dimension
-        final_audio = torch.cat(combined_audio)
+        final_audio = torch.cat(combined_tensors)
 
         # Create directory if it doesn't exist
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
@@ -421,7 +413,7 @@ class ConvoManager:
         torchaudio.save(
             output_path,
             final_audio.unsqueeze(0).cpu(),  # Add channel dimension and ensure on CPU
-            sample_rate,
+            self.audio_provider.sample_rate,
         )
 
         return output_path
@@ -429,30 +421,28 @@ class ConvoManager:
 
 # Example usage demonstration
 async def demo():
-    # Create speakers with speaker IDs for CSM model
     speakers = [
         Speaker(
             name="Alice",
             description="Tech entrepreneur",
             personality="Ambitious, technical, direct",
             speaking_style="Uses technical jargon, speaks confidently",
-            speaker_id=0,  # Speaker ID for CSM
         ),
         Speaker(
             name="Bob",
             description="Philosophy professor",
             personality="Thoughtful, analytical, kind",
             speaking_style="Speaks in questions, uses metaphors",
-            speaker_id=1,  # Speaker ID for CSM
         ),
         Speaker(
             name="Charlie",
             description="Stand-up comedian",
             personality="Witty, sarcastic, observant",
             speaking_style="Uses humor, makes pop culture references",
-            speaker_id=0,  # Reusing speaker ID 0 since CSM has limited voices
         ),
     ]
+
+    breakpoint()
 
     # Create the text provider (using Ollama by default)
     async with httpx.AsyncClient(base_url="http://localhost:11434/v1") as client:
@@ -478,8 +468,8 @@ async def demo():
         initial_speaker = speakers[0]  # Alice will start
 
         # Stream each turn as it's generated
-        async for turn in manager.generate_conversation_stream(
-            num_turns=3,
+        async for turn in manager.generate_convo_text_stream(
+            num_turns=5,
             initial_phrase=initial_phrase,
             initial_speaker=initial_speaker,
         ):
