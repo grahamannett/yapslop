@@ -9,7 +9,7 @@ A simple wrapper around [CSM](https://github.com/facebookresearch/csm) to make i
 git clone https://github.com/grahamannett/yapslop.git
 cd yapslop
 # if subtree needed:
-git subtree add --prefix=csm https://github.com/SesameAILabs/csm.git main --squash
+git subtree add --prefix=packages/csm https://github.com/SesameAILabs/csm.git main --squash
 ```
 
 

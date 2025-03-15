@@ -52,3 +52,5 @@ logs/
 # Jupyter Notebook
 .ipynb_checkpoints
 uv.lock
+
+.cursor/rules
