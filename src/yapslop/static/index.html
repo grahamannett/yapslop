@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>YapSlop Streaming</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            max-width: 500px;
+            margin: 20px auto;
+        }
+
+        button {
+            padding: 10px 20px;
+            margin-right: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>yapslop</h1>
+
+    <div>
+        <button id="playBtn">Play</button>
+        <button id="stopBtn" disabled>Stop</button>
+    </div>
+
+    <script>
+        const playBtn = document.getElementById('playBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        let ws = null;
+        let currentAudio = null;
+
+        // Start streaming
+        playBtn.addEventListener('click', () => {
+            if (ws) return;
+
+            playBtn.disabled = true;
+            stopBtn.disabled = false;
+
+            // Connect to WebSocket
+            ws = new WebSocket(`ws://${window.location.host}/stream`);
+
+            ws.onopen = () => {
+                console.log('Connected to server');
+            };
+
+            ws.onmessage = async (event) => {
+                // Handle text messages
+                if (typeof event.data === 'string') {
+                    console.log(event.data);
+                    return;
+                }
+
+                // Handle audio data
+                try {
+                    const arrayBuffer = await event.data.arrayBuffer();
+                    const blob = new Blob([arrayBuffer], { type: "audio/wav" });
+                    const url = URL.createObjectURL(blob);
+
+                    // Clean up previous audio if any
+                    if (currentAudio) {
+                        currentAudio.pause();
+                        URL.revokeObjectURL(currentAudio.src);
+                    }
+
+                    // Create and play new audio
+                    currentAudio = new Audio(url);
+                    currentAudio.onended = () => {
+                        ws.send("next");
+                    };
+
+                    currentAudio.onerror = () => {
+                        console.error("Error playing audio");
+                        ws.send("next");
+                    };
+
+                    currentAudio.play();
+                } catch (error) {
+                    console.error("Error handling audio:", error);
+                    ws.send("next");
+                }
+            };
+
+            ws.onclose = () => {
+                console.log("Connection closed");
+                cleanup();
+            };
+
+            ws.onerror = (error) => {
+                console.error("WebSocket error:", error);
+                cleanup();
+            };
+        });
+
+        // Stop streaming
+        stopBtn.addEventListener('click', () => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send("stop");
+            }
+            cleanup();
+        });
+
+        // Clean up resources
+        function cleanup() {
+            playBtn.disabled = false;
+            stopBtn.disabled = true;
+
+            if (currentAudio) {
+                currentAudio.pause();
+                URL.revokeObjectURL(currentAudio.src);
+                currentAudio = null;
+            }
+
+            if (ws) {
+                if (ws.readyState === WebSocket.OPEN) {
+                    ws.close();
+                }
+                ws = null;
+            }
+        }
+    </script>
+</body>
+
+</html>
