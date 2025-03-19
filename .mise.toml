@@ -1,2 +1,5 @@
 [env]
     PYTHONPATH = "packages/csm"
+
+[tasks.demo]
+    run = "uv run src/yapslop/yap.py"
