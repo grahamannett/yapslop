@@ -437,14 +437,14 @@ class ConvoManager:
             )
             yield turn
 
-        # Generate the rest of the conversation one turn at a time
-        for _ in range(num_turns):
+        while num_turns != 0:
             turn = await self.generate_turn(
                 speaker=self.select_next_speaker(),
                 do_audio_generate=do_audio_generate,
                 save_audio=save_audio,
             )
             yield turn
+            num_turns -= 1
 
     def save_combined_audio(
         self,

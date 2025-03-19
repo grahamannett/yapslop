@@ -47,8 +47,6 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-app.mount("/static", StaticFiles(directory="static", html=True), name="static")
-
 
 async def audio_tensor_to_wav_bytes(audio_tensor: torch.Tensor, sample_rate: int) -> bytes:
     """Convert audio tensor to WAV bytes for streaming"""
@@ -65,7 +63,7 @@ async def stream_audio(websocket: WebSocket):
 
     try:
         convo_manager = app_lifespan["convo_manager"]
-        initial_speaker = app_lifespan["initial_speaker"]
+        initial_speaker = convo_manager.speakers[0]
 
         await websocket.send_text("Starting conversation stream...")
 

@@ -3,17 +3,56 @@
 
 <head>
     <meta charset="UTF-8">
-    <title>YapSlop Streaming</title>
+    <title>yapslop</title>
     <style>
         body {
-            font-family: sans-serif;
-            max-width: 500px;
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 800px;
             margin: 20px auto;
+            padding: 0 20px;
+            line-height: 1.6;
+        }
+
+        .controls {
+            margin: 20px 0;
         }
 
         button {
             padding: 10px 20px;
             margin-right: 10px;
+            font-size: 16px;
+            cursor: pointer;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .conversation {
+            margin-top: 20px;
+        }
+
+        .turn {
+            margin: 15px 0;
+            padding: 15px;
+            background: #f5f5f5;
+            border-radius: 8px;
+        }
+
+        .speaker {
+            font-weight: bold;
+            color: #2196F3;
+        }
+
+        .status {
+            margin-top: 20px;
+            font-style: italic;
+            color: #666;
         }
     </style>
 </head>
@@ -21,51 +60,75 @@
 <body>
     <h1>yapslop</h1>
 
-    <div>
-        <button id="playBtn">Play</button>
-        <button id="stopBtn" disabled>Stop</button>
+    <div class="controls">
+        <button id="playBtn">start</button>
+        <button id="stopBtn" disabled>stop</button>
     </div>
+
+    <div class="conversation" id="conversation"></div>
+    <div class="status" id="status"></div>
 
     <script>
         const playBtn = document.getElementById('playBtn');
         const stopBtn = document.getElementById('stopBtn');
+        const conversation = document.getElementById('conversation');
+        const status = document.getElementById('status');
         let ws = null;
         let currentAudio = null;
 
-        // Start streaming
+        function updateStatus(message) {
+            status.textContent = message;
+        }
+
+        function addConversationTurn(speaker, text) {
+            const turn = document.createElement('div');
+            turn.className = 'turn';
+            turn.innerHTML = `<span class="speaker">${speaker}:</span> ${text}`;
+            conversation.appendChild(turn);
+            turn.scrollIntoView({ behavior: 'smooth' });
+        }
+
         playBtn.addEventListener('click', () => {
             if (ws) return;
 
             playBtn.disabled = true;
             stopBtn.disabled = false;
+            conversation.innerHTML = ''; // Clear previous conversation
+            updateStatus('Connecting...');
 
-            // Connect to WebSocket
             ws = new WebSocket(`ws://${window.location.host}/stream`);
 
             ws.onopen = () => {
-                console.log('Connected to server');
+                updateStatus('Connected! Starting conversation...');
             };
 
             ws.onmessage = async (event) => {
-                // Handle text messages
                 if (typeof event.data === 'string') {
-                    console.log(event.data);
+                    if (event.data.startsWith('speaking:')) {
+                        const [_, speaker, text] = event.data.split(':');
+                        addConversationTurn(speaker, text);
+                        updateStatus(`${speaker} is speaking...`);
+                    } else if (event.data.startsWith('error:')) {
+                        updateStatus('Error: ' + event.data.slice(6));
+                    } else if (event.data.startsWith('complete:')) {
+                        updateStatus('Conversation finished!');
+                        cleanup();
+                    } else {
+                        console.log(event.data);
+                    }
                     return;
                 }
 
-                // Handle audio data
                 try {
                     const arrayBuffer = await event.data.arrayBuffer();
                     const blob = new Blob([arrayBuffer], { type: "audio/wav" });
                     const url = URL.createObjectURL(blob);
 
-                    // Clean up previous audio if any
                     if (currentAudio) {
                         currentAudio.pause();
                         URL.revokeObjectURL(currentAudio.src);
                     }
 
-                    // Create and play new audio
                     currentAudio = new Audio(url);
                     currentAudio.onended = () => {
                         ws.send("next");
@@ -76,7 +139,7 @@
                         ws.send("next");
                     };
 
-                    currentAudio.play();
+                    await currentAudio.play();
                 } catch (error) {
                     console.error("Error handling audio:", error);
                     ws.send("next");
@@ -84,25 +147,25 @@
             };
 
             ws.onclose = () => {
-                console.log("Connection closed");
+                updateStatus("Connection closed");
                 cleanup();
             };
 
             ws.onerror = (error) => {
                 console.error("WebSocket error:", error);
+                updateStatus("Connection error");
                 cleanup();
             };
         });
 
-        // Stop streaming
         stopBtn.addEventListener('click', () => {
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send("stop");
             }
             cleanup();
+            updateStatus("Conversation stopped");
         });
 
-        // Clean up resources
         function cleanup() {
             playBtn.disabled = false;
             stopBtn.disabled = true;

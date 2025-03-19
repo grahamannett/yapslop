@@ -20,3 +20,13 @@ uv pip install -r csm/requirements.txt
 ```
 
 3. Additionally need `ffmpeg` installed and local files from `csm` as importable (if this is possible from pyproject.toml using uv please let me know, i am using mise with PYTHONPATH for the time being)
+
+
+## Server Usage
+
+To run a server that generates a continuous stream of slop, run:
+
+```bash
+uv run python src/yapslop/server.py
+```
+
