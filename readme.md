@@ -1,8 +1,12 @@
 # YapSlop
 
-A simple wrapper around [CSM](https://github.com/facebookresearch/csm) to make it easier to use.
+## The slop must flow.
 
-## Setup
+Generate a continuous stream of conversational audio using CSM 1B model: [CSM](https://github.com/SesameAILabs/csm) and another model (via ollama).
+
+This repo contains both a CLI way to generate yap and a server that allows you to continuously generate a stream of slop.
+
+# Setup
 
 1. Clone this repository:
 ```bash
@@ -19,7 +23,7 @@ uv pip install -e .
 uv pip install -r csm/requirements.txt
 ```
 
-3. Additionally need `ffmpeg` installed and local files from `csm` as importable (if this is possible from pyproject.toml using uv please let me know, i am using mise with PYTHONPATH for the time being)
+3. Additionally need `ffmpeg` installed and local files from `csm` as importable (if this is possible from pyproject.toml using uv, I am unaware of how. instead i am using mise and setting PYTHONPATH to the csm directory such that there is ideally no changes to the original csm repo).
 
 
 ## Server Usage
@@ -27,7 +31,7 @@ uv pip install -r csm/requirements.txt
 To run a server that generates a continuous stream of slop, run:
 
 ```bash
-uv run python src/yapslop/server.py
+uv run python yapslop/server.py
 ```
 
 # Notes
