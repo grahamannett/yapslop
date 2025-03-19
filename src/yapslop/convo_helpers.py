@@ -3,7 +3,7 @@ import re
 from typing import Sequence, TypeAlias, TYPE_CHECKING
 
 if TYPE_CHECKING:  # to avoid circular imports since initially was trying to utilize 1 file
-    from yapslop.yap import ConvoTurn, TextModelProvider
+    from yapslop.yap import ConvoTurn, TextProvider, Speaker
 
 MessageType: TypeAlias = list[dict[str, str]]
 
@@ -21,17 +21,21 @@ def get_conversation_as_string(history: list["ConvoTurn"]) -> str:  # type: igno
     return "\n".join([str(turn) for turn in history])
 
 
-async def generate_speaker_dict(text_provider: "TextModelProvider"):
-    system = (
-        "You are part of an AI system that helps to create characters for a conversation simulation."
-        "Output ONLY the JSON object and do not include additional information or text"
-    )
+async def generate_speaker_dict(text_provider: "TextProvider", speakers: list["Speaker"] = []):
+    system = "You are part of an AI system that helps to create characters for a conversation simulation."
+
+    if speakers:
+        system += f"Speakers so far: {' '.join([s.name for s in speakers])}"
+
+    system += "Output ONLY the JSON object and do not include additional information or text."
+
     msg = (
         "Generate a character that has the following properties:\n"
         "- name: The first name of the character.\n"
-        "- description: Description of the character containing the description of the character and speaking style "
+        "- description: Description of the character containing the description of the character and speaking style"
         "e.g. 'Tech entrepreneur who speaks in technical jargon, speaks confidently'"
     )
+
     messages = msg_helper(msg, system=system)
     response = await text_provider.chat_ollama(
         messages=messages,

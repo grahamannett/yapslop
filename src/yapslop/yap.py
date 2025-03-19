@@ -1,7 +1,8 @@
 import asyncio
 import os
+from pathlib import Path
 import random
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import ClassVar
 
 import httpx
@@ -10,12 +11,10 @@ import torchaudio
 from huggingface_hub import hf_hub_download
 
 from csm.generator import Segment, load_csm_1b
+from yapslop.convo_helpers import MessageType, generate_speaker_dict
 
-MessageType = list[dict[str, str]]
-
-
-# Define the system prompt template as a module constant
-SYSTEM_PROMPT_TEMPLATE = """
+device = "cuda" if torch.cuda.is_available() else "cpu"
+system_prompt_template = """
 You are simulating a conversation between the following characters:
 {speakers_desc}
 
@@ -25,6 +24,7 @@ Follow these rules:
 3. Keep responses concise and natural-sounding
 4. Don't narrate actions or use quotation marks
 5. Don't refer to yourself in the third person
+6. Keep the response length similar to the other responses.
 """
 
 
@@ -35,37 +35,29 @@ def load_audio(audio_path: str, new_freq: int = 24_000) -> torch.Tensor:
     )
 
 
-def make_system_prompt(speakers: list["Speaker"]) -> str:
+def make_convo_system_prompt(speakers: list["Speaker"]) -> str:
     def format_speaker(speaker: "Speaker") -> str:
         prompt = f"{speaker.name}"
-        if speaker.description:
-            prompt += f" ({speaker.description})"
-        if speaker.personality:
-            prompt += f"\nPersonality: {speaker.personality}"
-        if speaker.speaking_style:
-            prompt += f"\nSpeaking style: {speaker.speaking_style}"
+        if speakers_desc := getattr(speaker, "description", None):
+            prompt += f" ({speakers_desc})"
+        if speakers_style := getattr(speaker, "speaking_style", None):
+            prompt += f"\nSpeaking style: {speakers_style}"
         return prompt
 
     speakers_desc = "\n\n".join(format_speaker(speaker) for speaker in speakers)
-    return SYSTEM_PROMPT_TEMPLATE.format(speakers_desc=speakers_desc)
-
-
-def get_conversation_as_string(history: list["ConvoTurn"]) -> str:
-    return "\n".join([str(turn) for turn in history])
+    return system_prompt_template.format(speakers_desc=speakers_desc)
 
 
 @dataclass
 class Speaker:
     """Participant in a conversation."""
 
-    _next_id: ClassVar[int] = 0
-
     name: str
     description: str = ""
-    personality: str = ""
-    speaking_style: str = ""
     # Make speaker_id a proper field with a default_factory to get the next ID
     speaker_id: int = field(default_factory=lambda: Speaker._get_next_id())
+
+    _next_id: ClassVar[int] = 0
 
     @classmethod
     def _get_next_id(cls) -> int:
@@ -74,6 +66,9 @@ class Speaker:
 
     def __str__(self) -> str:
         return f"{self.name}"
+
+    def asdict(self) -> dict:
+        return asdict(self)
 
 
 @dataclass
@@ -106,31 +101,80 @@ class ConvoTurn:
 
 
 @dataclass
-class TextModelProvider:
+class TextOptions:
+    max_tokens: int  # ~300?
+    temperature: float = 0.8
+
+    def asdict(self, **kwargs) -> dict:
+        return asdict(self) | kwargs
+
+    # some of the ollama options are different that the openai options, i know ill have to deal with both of these later
+    def oai_fmt(self):
+        return self
+
+    def ollama_fmt(self):
+        return self
+
+
+@dataclass
+class TextProvider:
     """Base class for model providers, switch to using pydantic-ai/vllm/etc later"""
 
     client: httpx.AsyncClient
     model_name: str
 
-    async def generate_text(
-        self, messages: MessageType, max_tokens: int = 300, temperature: float = 0.7, **kwargs
+    def _from_resp(self, resp: httpx.Response) -> dict:
+        resp.raise_for_status()
+        return resp.json()
+
+    async def chat_oai(
+        self, messages: MessageType, model_options: TextOptions | dict = {}, **kwargs
     ) -> str:
-        """Generate text using Ollama's API."""
+        """Generate text using OpenAI API endpoint"""
+        if isinstance(model_options, TextOptions):
+            model_options = model_options.asdict(**kwargs)
 
         response = await self.client.post(
-            "/chat/completions",
+            "/v1/chat/completions",  # openai-compatible endpoint
             json={
                 "model": self.model_name,
                 "messages": messages,
-                "max_tokens": max_tokens,
-                "temperature": temperature,
-                **kwargs,
+                **model_options,
             },
         )
-        response.raise_for_status()
-        response_data = response.json()
-
+        response_data = self._from_resp(response)
         return response_data["choices"][0]["message"]["content"]
+
+    async def chat_ollama(
+        self,
+        messages: MessageType,
+        stream: bool = False,
+        tools: list[dict] | None = None,
+        model_options: TextOptions | dict | None = None,
+        **kwargs,
+    ) -> dict:
+        """
+        Generate a chat completion response using Ollama's API.
+
+        The reason we may prefer this over the openai endpoint is there is variability in the tool use
+        """
+
+        if isinstance(model_options, TextOptions):
+            model_options = model_options.ollama_fmt().asdict(**kwargs)
+
+        payload = {
+            "model": self.model_name,
+            "messages": messages,
+            "stream": stream,
+        }
+        if model_options:
+            payload["options"] = model_options
+        if tools:
+            payload["tools"] = tools
+
+        response = await self.client.post("/api/chat", json=payload)
+        response_data = self._from_resp(response)
+        return response_data
 
 
 @dataclass
@@ -151,7 +195,7 @@ class AudioProvider:
         text: str,
         speaker_id: int,
         context_turns: list[ConvoTurn] = [],
-        max_audio_length_ms: int = 10_000,
+        max_audio_length_ms: int | None = None,
     ):
         """
         Generate audio for the given text and speaker.
@@ -172,12 +216,14 @@ class AudioProvider:
                 if turn.audio is not None:
                     context_segments.append(turn.to_segment())
 
-        audio = self.generator.generate(
-            text=text,
-            speaker=speaker_id,
-            context=context_segments,
-            max_audio_length_ms=max_audio_length_ms,
-        )
+        generate_kwargs = {
+            "text": text,
+            "speaker": speaker_id,
+            "context": context_segments,
+            **({"max_audio_length_ms": max_audio_length_ms} if max_audio_length_ms else {}),
+        }
+
+        audio = self.generator.generate(**generate_kwargs)
 
         return audio
 
@@ -191,38 +237,46 @@ class ConvoManager:
     Manages a simulated conversation between multiple speakers using a language model.
     """
 
+    system_prompt: str
+
     def __init__(
         self,
-        speakers: list[Speaker],
-        text_provider: TextModelProvider,
+        text_provider: TextProvider,
         audio_provider: AudioProvider | None = None,
+        n_speakers: int = 2,
+        speakers: list[Speaker] = [],
+        system_prompt: str | None = None,
         max_tokens: int = 300,
         temperature: float = 0.7,
-        system_prompt: str | None = None,
-        audio_output_dir: str | None = None,  # = "audio_output",
-        limit_context_turns: int | None = None,
+        audio_output_dir: str | None = None,
+        limit_context_turns: int
+        | None = 3,  # limit either the text length or the audio context length
     ):
         """
         Initialize the conversation manager.
 
         Args:
-            speakers: List of Speaker objects participating in the conversation
             text_provider: Model provider to use for text generation
             audio_provider: Optional AudioProvider for speech synthesis
+            n_speakers: Number of speakers to include in the conversation
+            speakers: Optional list of pre-defined speakers. If empty, speakers will be generated
+            system_prompt: Optional system prompt to guide the conversation
             max_tokens: Maximum tokens to generate per turn
             temperature: Temperature setting for generation (higher = more random)
-            system_prompt: Optional system prompt to guide the conversation
             audio_output_dir: Directory to save generated audio files
+            limit_context_turns: Maximum number of previous turns to use as context for audio generation
         """
-        self.speakers = speakers
+
         self.text_provider = text_provider
+        self.text_options = TextOptions(max_tokens=max_tokens, temperature=temperature)
+
         self.audio_provider = audio_provider
-        self.max_tokens = max_tokens
-        self.temperature = temperature
         self.audio_output_dir = audio_output_dir
 
         # Default system prompt if none provided
-        self.system_prompt = system_prompt or make_system_prompt(speakers)
+        self.speakers = speakers
+        self.n_speakers = n_speakers
+        self.system_prompt = system_prompt
 
         self.history: list[ConvoTurn] = []
         self.limit_context_turns = limit_context_turns
@@ -231,8 +285,13 @@ class ConvoManager:
         if self.audio_output_dir:
             os.makedirs(self.audio_output_dir, exist_ok=True)
 
-    def _audio_provider_turn_end(self, turn: ConvoTurn) -> ConvoTurn:
-        if self.audio_provider and self.audio_output_dir:
+    def _cleanup_text_turn(self, text: str, speaker: Speaker) -> str:
+        if text.startswith(f"{speaker.name}:"):
+            text = text[len(f"{speaker.name}:") :].strip()
+        return text
+
+    def _post_turn(self, turn: ConvoTurn, save_audio: bool) -> ConvoTurn:
+        if save_audio and self.audio_provider and self.audio_output_dir:
             audio_filename = f"turn_{len(self.history)}_speaker_{turn.speaker.speaker_id}.wav"
             turn.audio_path = f"{self.audio_output_dir}/{audio_filename}"
             self.audio_provider.save_audio(turn.audio, turn.audio_path)
@@ -250,22 +309,43 @@ class ConvoManager:
         Returns:
             List of message dictionaries for the API call
         """
-        messages = [{"role": "system", "content": self.system_prompt}]
+        system_prompt = self.system_prompt
 
-        # Add previous conversation turns as context
-        for turn in self.history:
-            messages.append({"role": "assistant", "content": f"{turn.speaker.name}: {turn.text}"})
+        if self.history:
+            system_prompt += "\n---\nPrevious conversation Turns:\n"
 
-        # Add instruction for the next speaker
+            for turn in self.history:
+                system_prompt += f"{turn.speaker.name}: {turn.text}"
+
+        msgs = [{"role": "system", "content": system_prompt}]
         if next_speaker:
-            messages.append(
+            msgs.append(
                 {
                     "role": "user",
-                    "content": f"Now {next_speaker.name} speaks next. Generate only {next_speaker.name}'s response.",
+                    "content": f"{next_speaker.name}:",
                 }
             )
 
-        return messages
+        return msgs
+
+    async def setup_speakers(
+        self, n_speakers: int | None = None, speakers: list[Speaker] = []
+    ) -> list[Speaker]:
+        """
+        Generate a list of speakers for the conversation.  Allows you to pass in speakers or
+        """
+        # allow for passing in speakers or use the existing speakers
+        n_speakers = n_speakers or self.n_speakers
+        if self.speakers:
+            speakers += self.speakers
+
+        for _ in range(len(speakers), n_speakers):
+            speaker = await generate_speaker_dict(self.text_provider, speakers=speakers)
+            speakers.append(Speaker(**speaker))
+
+        self.speakers = speakers
+        self.system_prompt = self.system_prompt or make_convo_system_prompt(speakers)
+        return speakers
 
     def select_next_speaker(self) -> Speaker:
         """
@@ -275,14 +355,14 @@ class ConvoManager:
         if not self.history:
             return random.choice(self.speakers)
 
-        # Avoid consecutive turns by the same speaker
         return random.choice([s for s in self.speakers if s != self.history[-1].speaker])
 
     async def generate_turn(
         self,
-        generate_audio: bool = True,
-        speaker: Speaker | None = None,
+        speaker: Speaker,
         text: str | None = None,
+        do_audio_generate: bool = True,
+        save_audio: bool = True,
     ) -> ConvoTurn:
         """
         Generate the next turn in the conversation.
@@ -294,37 +374,33 @@ class ConvoManager:
         Returns:
             ConvoTurn object containing the generated text and optionally audio
         """
-        speaker = speaker or self.select_next_speaker()
+        # --- Generate Text For the Turn, Optionally Provide the Text
 
         if text is None:
-            messages = self._create_prompt_for_next_turn(speaker)
+            msgs = self._create_prompt_for_next_turn(speaker)
+            text = await self.text_provider.chat_oai(messages=msgs, model_options=self.text_options)
 
-            # Generate text using the provider
-            text = await self.text_provider.generate_text(
-                messages=messages, max_tokens=self.max_tokens, temperature=self.temperature
-            )
-
-            if text.startswith(f"{speaker.name}:"):
-                text = text[len(f"{speaker.name}:") :].strip()
+            text = self._cleanup_text_turn(text=text, speaker=speaker)
 
         turn = ConvoTurn(speaker=speaker, text=text)
-        self.history.append(turn)
 
-        if generate_audio and self.audio_provider:
+        # --- Generate Audio For the Turn
+        if do_audio_generate and self.audio_provider:
             # Get recent context turns with audio (limit to 3 for performance)
             context_turns = [t for t in self.history[:-1] if t.audio is not None]
 
             if self.limit_context_turns:
                 context_turns = context_turns[-self.limit_context_turns :]
 
-            audio = self.audio_provider.generate_audio(
-                text=text,
-                speaker_id=speaker.speaker_id,
+            turn.audio = self.audio_provider.generate_audio(
+                text=turn.text,
+                speaker_id=turn.speaker.speaker_id,
                 context_turns=context_turns,
             )
 
-            turn.audio = audio
-            turn = self._audio_provider_turn_end(turn)
+            turn = self._post_turn(turn, save_audio=save_audio)
+
+        self.history.append(turn)
 
         return turn
 
@@ -333,7 +409,8 @@ class ConvoManager:
         num_turns: int,
         initial_phrase: str | None = None,
         initial_speaker: Speaker | None = None,
-        generate_audio: bool = True,
+        do_audio_generate: bool = True,
+        save_audio: bool = True,
     ):
         """
         Generate a conversation with the specified number of turns as an async generator.
@@ -343,24 +420,31 @@ class ConvoManager:
             num_turns: Number of turns to generate
             initial_phrase: Optional text to start the conversation with
             initial_speaker: Optional speaker for the initial phrase
-            generate_audio: Whether to generate audio for each turn
+            do_audio_generate: Whether to generate audio for each turn
+            save_audio: Whether to save the audio for each turn
 
         Yields:
             ConvoTurn objects one at a time as they are generated
         """
         # Add initial phrase if provided
         if initial_phrase:
-            turn = await self.generate_turn(generate_audio, initial_speaker, text=initial_phrase)
+            speaker = initial_speaker or self.select_next_speaker()
+            turn = await self.generate_turn(
+                text=initial_phrase,
+                speaker=speaker,
+                save_audio=save_audio,
+                do_audio_generate=do_audio_generate,
+            )
             yield turn
 
         # Generate the rest of the conversation one turn at a time
         for _ in range(num_turns):
-            turn = await self.generate_turn(generate_audio)
+            turn = await self.generate_turn(
+                speaker=self.select_next_speaker(),
+                do_audio_generate=do_audio_generate,
+                save_audio=save_audio,
+            )
             yield turn
-
-    async def generate_convo_text(self, *args, **kwargs) -> list[ConvoTurn]:
-        """Generate a conversation with the specified number of turns."""
-        return [turn async for turn in self.generate_convo_text_stream(*args, **kwargs)]
 
     def save_combined_audio(
         self,
@@ -369,15 +453,18 @@ class ConvoManager:
         add_silence_ms: int = 500,
     ) -> str:
         """
-        Combine audio from multiple conversation turns into a single audio file.
+        Combine audio from multiple conversation turns into a single audio file with silence between each turn.
 
         Args:
-            output_path: Path to save the combined audio file
-            turns: List of ConvoTurn objects with audio (defaults to self.history)
-            add_silence_ms: Milliseconds of silence to add between turns
+            output_path: Path where the combined audio file will be saved
+            turns: Optional list of ConvoTurn objects containing audio to combine. If None, uses self.history
+            add_silence_ms: Milliseconds of silence to insert between each turn. Defaults to 500ms
 
         Returns:
-            Path to the saved audio file
+            str: Path to the saved combined audio file
+
+        Raises:
+            ValueError: If no audio provider is initialized or if no turns with audio are found
         """
         if self.audio_provider is None:
             raise ValueError("Audio provider not initialized")
@@ -420,73 +507,57 @@ class ConvoManager:
 
 
 # Example usage demonstration
-async def demo():
+async def demo(
+    n_speakers: int = 2,
+    num_turns: int = 5,
+    initial_phrase: str = "Did you hear about that new conversational AI model that just came out?",
+    audio_output_dir: str = "audio_output",
+    cleanup_audio_dir: bool = True,
+):
+    if cleanup_audio_dir and (_dir := Path(audio_output_dir)):
+        _dir.mkdir(parents=True, exist_ok=True)
+        _ = [f.unlink() for f in _dir.glob("*.wav")]
+
+    # demo showing one initial speaker but then generate the rest of the speakers
     speakers = [
         Speaker(
-            name="Alice",
-            description="Tech entrepreneur",
-            personality="Ambitious, technical, direct",
-            speaking_style="Uses technical jargon, speaks confidently",
-        ),
-        Speaker(
-            name="Bob",
-            description="Philosophy professor",
-            personality="Thoughtful, analytical, kind",
-            speaking_style="Speaks in questions, uses metaphors",
-        ),
-        Speaker(
-            name="Charlie",
-            description="Stand-up comedian",
-            personality="Witty, sarcastic, observant",
-            speaking_style="Uses humor, makes pop culture references",
+            name="Seraphina",
+            description="Tech entrepreneur. Uses technical jargon, speaks confidently",
         ),
     ]
 
-    breakpoint()
-
-    # Create the text provider (using Ollama by default)
-    async with httpx.AsyncClient(base_url="http://localhost:11434/v1") as client:
-        text_provider = TextModelProvider(client=client, model_name="gemma3:1b")
-
-        # Create the audio generator (if you want audio)
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Create the text provider (using Ollama by default). Example using the streaming generator
+    async with httpx.AsyncClient(base_url="http://localhost:11434") as client:
         audio_provider = AudioProvider(device=device)
+        text_provider = TextProvider(client=client, model_name="gemma3:latest")
 
-        # Initialize conversation manager with the providers
-        manager = ConvoManager(
+        convo_manager = ConvoManager(
+            n_speakers=n_speakers,
             speakers=speakers,
             text_provider=text_provider,
             audio_provider=audio_provider,
-            # audio_output_dir="audio_output",
+            audio_output_dir=audio_output_dir,
         )
 
-        # Example using the streaming generator
-        print("Streaming conversation in real-time")
-        print("-" * 50)
+        await convo_manager.setup_speakers()
 
-        initial_phrase = "Did you hear about that new AI model that just came out?"
-        initial_speaker = speakers[0]  # Alice will start
+        initial_speaker = convo_manager.speakers[0]
 
+        print("Streaming conversation in real-time\n" + "-" * 50)
         # Stream each turn as it's generated
-        async for turn in manager.generate_convo_text_stream(
-            num_turns=5,
+        async for turn in convo_manager.generate_convo_text_stream(
+            num_turns=num_turns,
             initial_phrase=initial_phrase,
             initial_speaker=initial_speaker,
         ):
-            # Process each turn immediately as it's generated
             print(f"{turn}")
             if turn.audio_path:
                 print(f"Audio saved to: {turn.audio_path}")
-            # You could add a delay here to simulate real-time conversation
-            # await asyncio.sleep(1)
 
         print("-" * 50)
 
     # Save combined audio
-    combined_audio_path = manager.save_combined_audio(
-        output_path="full_conversation.wav",
-        add_silence_ms=700,  # Add 700ms silence between turns
-    )
+    combined_audio_path = convo_manager.save_combined_audio(output_path="full_conversation.wav")
     print(f"Combined audio saved to: {combined_audio_path}")
 
 

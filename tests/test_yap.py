@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from yapslop.convo_helpers import generate_speaker_dict
-from yapslop.yap import Speaker, TextModelProvider, ConvoManager
+from yapslop.yap import Speaker, TextProvider, ConvoManager
 
 pytestmark = pytest.mark.anyio
 
@@ -41,10 +41,10 @@ def ollama_params():
 async def text_provider(ollama_params: dict):
     base_url = ollama_params.pop("ollama_url")
     async with httpx.AsyncClient(base_url=base_url) as client:
-        yield TextModelProvider(client, **ollama_params)
+        yield TextProvider(client, **ollama_params)
 
 
-async def test_generate_speaker(text_provider: TextModelProvider):
+async def test_generate_speaker(text_provider: TextProvider):
     """
     Test that the generate_speaker_dict function can generate a speaker dictionary
     """
@@ -58,7 +58,7 @@ async def test_generate_speaker(text_provider: TextModelProvider):
     assert speaker.description == speaker_dict["description"]
 
 
-async def test_convo_generate_speakers(text_provider: TextModelProvider):
+async def test_convo_generate_speakers(text_provider: TextProvider):
     """
     Test that the convo manager can generate speakers
     """
