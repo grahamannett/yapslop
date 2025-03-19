@@ -77,7 +77,6 @@ async def stream_audio(websocket: WebSocket):
             save_audio=False,
         ):
             try:
-                # Send the speaker and text first
                 print(f"speaking:{turn.speaker.name}:{turn.text}")
                 await websocket.send_text(f"speaking:{turn.speaker.name}:{turn.text}")
 

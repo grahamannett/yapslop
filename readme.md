@@ -30,3 +30,8 @@ To run a server that generates a continuous stream of slop, run:
 uv run python src/yapslop/server.py
 ```
 
+# Notes
+
+- Originally thought this could be <500 LoC and one file, but doesnt seem like that would be a clean solution so will be splitting out the `yap` into more files.
+- Right now, using websockets for streaming the audio, had tested both websocket and `StreamingResponse` from fastapi and like the `StreamingResponse` way better but seemed less consistent in various ways.  Will reincorporate that for later.
+
