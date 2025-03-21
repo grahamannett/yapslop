@@ -2,36 +2,38 @@ import asyncio
 import io
 import traceback
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import httpx
 import torch
 import torchaudio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 
 from yapslop.yap import AudioProvider, ConvoManager, Speaker, TextProvider
 
+STATIC_DIR = Path(__file__).parent / "static"  # avoid mounting static dir unless i add more html/js
+
 app_lifespan = {}
+initial_speakers = [
+    Speaker(
+        name="Seraphina",
+        description="Tech entrepreneur. Uses technical jargon, speaks confidently",
+    ),
+]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with httpx.AsyncClient(base_url="http://localhost:11434") as client:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        audio_provider = AudioProvider(device=device)
-        text_provider = TextProvider(client=client, model_name="gemma3:latest")
+    audio_provider = AudioProvider()
+    text_provider = TextProvider()
 
-        speakers = [
-            Speaker(
-                name="Seraphina",
-                description="Tech entrepreneur. Uses technical jargon, speaks confidently",
-            ),
-        ]
+    async with httpx.AsyncClient(base_url=text_provider.base_url) as client:
+        text_provider.client = client
 
         convo_manager = ConvoManager(
             n_speakers=2,
-            speakers=speakers,
+            speakers=initial_speakers,
             text_provider=text_provider,
             audio_provider=audio_provider,
             audio_output_dir="audio_output",
@@ -117,7 +119,7 @@ async def stream_audio(websocket: WebSocket):
 
 @app.get("/")
 async def serve_index():
-    return FileResponse("src/yapslop/static/index.html")
+    return FileResponse(STATIC_DIR / "index.html")
 
 
 if __name__ == "__main__":

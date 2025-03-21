@@ -1,19 +1,17 @@
-import asyncio
 import os
-from pathlib import Path
 import random
-from dataclasses import asdict, dataclass, field
-from typing import ClassVar
+from dataclasses import dataclass
+from typing import Literal
 
 import httpx
 import torch
 import torchaudio
-from huggingface_hub import hf_hub_download
 
-from csm.generator import Segment, load_csm_1b
+from yapslop.convo_dto import ConvoTurn, Speaker, TextOptions
 from yapslop.convo_helpers import MessageType, generate_speaker_dict
+from yapslop.generator import load_csm_1b
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+DEVICE: Literal["cuda", "cpu"] = "cuda" if torch.cuda.is_available() else "cpu"
 system_prompt_template = """
 You are simulating a conversation between the following characters:
 {speakers_desc}
@@ -28,15 +26,8 @@ Follow these rules:
 """
 
 
-def load_audio(audio_path: str, new_freq: int = 24_000) -> torch.Tensor:
-    audio_tensor, sample_rate = torchaudio.load(audio_path)
-    return torchaudio.functional.resample(
-        audio_tensor.squeeze(0), orig_freq=sample_rate, new_freq=new_freq
-    )
-
-
-def make_convo_system_prompt(speakers: list["Speaker"]) -> str:
-    def format_speaker(speaker: "Speaker") -> str:
+def make_convo_system_prompt(speakers: list[Speaker]) -> str:
+    def format_speaker(speaker: Speaker) -> str:
         prompt = f"{speaker.name}"
         if speakers_desc := getattr(speaker, "description", None):
             prompt += f" ({speakers_desc})"
@@ -49,79 +40,13 @@ def make_convo_system_prompt(speakers: list["Speaker"]) -> str:
 
 
 @dataclass
-class Speaker:
-    """Participant in a conversation."""
-
-    name: str
-    description: str = ""
-    # Make speaker_id a proper field with a default_factory to get the next ID
-    speaker_id: int = field(default_factory=lambda: Speaker._get_next_id())
-
-    _next_id: ClassVar[int] = 0
-
-    @classmethod
-    def _get_next_id(cls) -> int:
-        cls._next_id += 1
-        return cls._next_id - 1
-
-    def __str__(self) -> str:
-        return f"{self.name}"
-
-    def asdict(self) -> dict:
-        return asdict(self)
-
-
-@dataclass
-class ConvoTurn:
-    """
-    Represents a single turn in a conversation.
-    """
-
-    speaker: Speaker
-    text: str
-    # Add audio field to store generated audio
-    audio: torch.Tensor | None = None
-    audio_path: str | None = None
-
-    def __str__(self) -> str:
-        return f"{self.speaker.name}: {self.text}"
-
-    def to_segment(self) -> Segment:
-        """
-        Convert this conversation turn to a CSM Segment for use as context
-        """
-        audio = self.audio
-        if audio is None and self.audio_path:
-            audio = load_audio(self.audio_path)
-
-        if (audio is None) and (self.audio_path is None):
-            raise ValueError("Cannot convert to CSM Segment without audio")
-
-        return Segment(speaker=self.speaker.speaker_id, text=self.text, audio=audio)
-
-
-@dataclass
-class TextOptions:
-    max_tokens: int  # ~300?
-    temperature: float = 0.8
-
-    def asdict(self, **kwargs) -> dict:
-        return asdict(self) | kwargs
-
-    # some of the ollama options are different that the openai options, i know ill have to deal with both of these later
-    def oai_fmt(self):
-        return self
-
-    def ollama_fmt(self):
-        return self
-
-
-@dataclass
 class TextProvider:
-    """Base class for model providers, switch to using pydantic-ai/vllm/etc later"""
+    """Base class for model providers, can switch to using pydantic-ai/vllm/etc later"""
 
-    client: httpx.AsyncClient
-    model_name: str
+    client: httpx.AsyncClient | None = None
+
+    model_name: str = "gemma3:latest"
+    base_url: str = "http://localhost:11434"
 
     def _from_resp(self, resp: httpx.Response) -> dict:
         resp.raise_for_status()
@@ -180,11 +105,10 @@ class TextProvider:
 @dataclass
 class AudioProvider:
     repo_id: str = "sesame/csm-1b"
-    device: str = "cuda"
+    device: str = DEVICE
 
     def __post_init__(self):
-        self.model_path = hf_hub_download(repo_id=self.repo_id, filename="ckpt.pt")
-        self.generator = load_csm_1b(self.model_path, device=self.device)
+        self.generator = load_csm_1b(device=self.device)
 
     @property
     def sample_rate(self) -> int:
@@ -194,7 +118,7 @@ class AudioProvider:
         self,
         text: str,
         speaker_id: int,
-        context_turns: list[ConvoTurn] = [],
+        context_turns: list["ConvoTurn"] = [],
         max_audio_length_ms: int | None = None,
     ):
         """
@@ -281,16 +205,17 @@ class ConvoManager:
         self.history: list[ConvoTurn] = []
         self.limit_context_turns = limit_context_turns
 
-    def _setup_audio_provider(self):
         if self.audio_output_dir:
             os.makedirs(self.audio_output_dir, exist_ok=True)
 
     def _cleanup_text_turn(self, text: str, speaker: Speaker) -> str:
+        """Remove the speaker name from the text if it's at the beginning of the text"""
         if text.startswith(f"{speaker.name}:"):
             text = text[len(f"{speaker.name}:") :].strip()
         return text
 
     def _post_turn(self, turn: ConvoTurn, save_audio: bool) -> ConvoTurn:
+        """Save the audio for the turn if the audio provider is set and the audio output dir is set"""
         if save_audio and self.audio_provider and self.audio_output_dir:
             audio_filename = f"turn_{len(self.history)}_speaker_{turn.speaker.speaker_id}.wav"
             turn.audio_path = f"{self.audio_output_dir}/{audio_filename}"
@@ -504,62 +429,3 @@ class ConvoManager:
         )
 
         return output_path
-
-
-# Example usage demonstration
-async def demo(
-    n_speakers: int = 2,
-    num_turns: int = 5,
-    initial_phrase: str = "Did you hear about that new conversational AI model that just came out?",
-    audio_output_dir: str = "audio_output",
-    cleanup_audio_dir: bool = True,
-):
-    if cleanup_audio_dir and (_dir := Path(audio_output_dir)):
-        _dir.mkdir(parents=True, exist_ok=True)
-        _ = [f.unlink() for f in _dir.glob("*.wav")]
-
-    # demo showing one initial speaker but then generate the rest of the speakers
-    speakers = [
-        Speaker(
-            name="Seraphina",
-            description="Tech entrepreneur. Uses technical jargon, speaks confidently",
-        ),
-    ]
-
-    # Create the text provider (using Ollama by default). Example using the streaming generator
-    async with httpx.AsyncClient(base_url="http://localhost:11434") as client:
-        audio_provider = AudioProvider(device=device)
-        text_provider = TextProvider(client=client, model_name="gemma3:latest")
-
-        convo_manager = ConvoManager(
-            n_speakers=n_speakers,
-            speakers=speakers,
-            text_provider=text_provider,
-            audio_provider=audio_provider,
-            audio_output_dir=audio_output_dir,
-        )
-
-        await convo_manager.setup_speakers()
-
-        initial_speaker = convo_manager.speakers[0]
-
-        print("Streaming conversation in real-time\n" + "-" * 50)
-        # Stream each turn as it's generated
-        async for turn in convo_manager.generate_convo_text_stream(
-            num_turns=num_turns,
-            initial_phrase=initial_phrase,
-            initial_speaker=initial_speaker,
-        ):
-            print(f"{turn}")
-            if turn.audio_path:
-                print(f"Audio saved to: {turn.audio_path}")
-
-        print("-" * 50)
-
-    # Save combined audio
-    combined_audio_path = convo_manager.save_combined_audio(output_path="full_conversation.wav")
-    print(f"Combined audio saved to: {combined_audio_path}")
-
-
-if __name__ == "__main__":
-    asyncio.run(demo())
