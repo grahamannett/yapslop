@@ -5,6 +5,7 @@
     readme = "readme.md"
     requires-python = ">=3.10"
     dependencies = [
+        "csm",
         "fastapi[standard]>=0.115.11",
         "httpx>=0.28.1",
         "huggingface-hub==0.28.1",
@@ -16,7 +17,7 @@
         "torchaudio==2.4.0",
         "torchtune==0.4.0",
         "transformers==4.49.0",
-]
+    ]
 
 [build-system]
     requires      = ["setuptools>=61.0"]
@@ -31,3 +32,4 @@
 
 [tool.uv.sources]
     silentcipher = { git = "https://github.com/SesameAILabs/silentcipher", rev = "master" }
+    csm          = { path = "packages/csm" }

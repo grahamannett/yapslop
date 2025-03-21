@@ -4,7 +4,7 @@ import tempfile
 import pytest
 import torch
 import torchaudio
-from csm.generator import load_csm_1b, Generator
+from yapslop.generator import load_csm_1b, Generator
 from huggingface_hub import hf_hub_download
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -27,8 +27,7 @@ def audio_output_file():
 
 def test_generator_init():
     Generator.use_wm = True  # monkey patch the use_wm attribute to alter the output of load_csm_1b
-    model_path = hf_hub_download(repo_id="sesame/csm-1b", filename="ckpt.pt")
-    generator = load_csm_1b(model_path, device)
+    generator = load_csm_1b(device)
     assert generator._watermarker is not None, "Watermarker should be initialized if use_wm is True"
 
 
@@ -53,8 +52,7 @@ def test_audio_generation(audio_output_file: str, text_prompt: str):
     - The temporary directory and its contents are automatically cleaned up after the test.
     """
     assert audio_output_file.endswith(".wav")
-    model_path = hf_hub_download(repo_id="sesame/csm-1b", filename="ckpt.pt")
-    generator = load_csm_1b(model_path, device)
+    generator = load_csm_1b(device)
 
     audio = generator.generate(
         text=text_prompt,
