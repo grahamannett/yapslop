@@ -12,18 +12,24 @@ This repo contains both a CLI way to generate yap and a server that allows you t
 ```bash
 git clone https://github.com/grahamannett/yapslop.git
 cd yapslop
-# if subtree needed:
+# for subtree, used:
 git subtree add --prefix=packages/csm https://github.com/SesameAILabs/csm.git main --squash
 ```
 
 
-2. Make editable install and install dependencies using `uv`:
+2. If you are not just using `uv sync` and need to make this or the csm package editable install with `uv`:
 ```bash
 uv pip install -e .
-uv pip install -r csm/requirements.txt
+uv pip install -e "csm @ ./packages/csm"
 ```
 
 3. Additionally need `ffmpeg` installed and local files from `csm` as importable (if this is possible from pyproject.toml using uv, I am unaware of how. instead i am using mise and setting PYTHONPATH to the csm directory such that there is ideally no changes to the original csm repo).
+
+## Note on csm
+
+Originally seemed they would not update their project much and was just a one time thing so subtree seemed the most appropriate way to utilize their model. Now they have updated some stuff (although not much) and added a `setup.py` so it is more like an actual package.  Moved to subclassing the `Generator` class and patching the `generate` method to avoid watermarking but since the package still has import errors if used as a dependency, you still must use PYTHONPATH when running...
+
+Also, for the `yapslop/generator.py`, if doing anything remember to save without formatting to preserve their formatting as makes it way easier to patch the `__init__` and `generate` methods.
 
 
 ## Server Usage
