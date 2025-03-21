@@ -10,26 +10,27 @@ import torchaudio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
-from yapslop.yap import AudioProvider, ConvoManager, Speaker, TextProvider
+from yapslop.yap import (
+    ConvoManager,
+    HTTPConfig,
+    ProvidersSetup,
+)
+from yapslop.yap_common import initial_speakers
 
 STATIC_DIR = Path(__file__).parent / "static"  # avoid mounting static dir unless i add more html/js
 
-app_lifespan = {}
-initial_speakers = [
-    Speaker(
-        name="Seraphina",
-        description="Tech entrepreneur. Uses technical jargon, speaks confidently",
-    ),
-]
+app_lifespan = {"http_config": HTTPConfig()}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    audio_provider = AudioProvider()
-    text_provider = TextProvider()
-
-    async with httpx.AsyncClient(base_url=text_provider.base_url) as client:
-        text_provider.client = client
+    async with httpx.AsyncClient(base_url=app_lifespan["http_config"].base_url) as client:
+        text_provider, audio_provider = ProvidersSetup(
+            configs={
+                "text": {"client": client},
+                "audio": {},
+            }
+        )
 
         convo_manager = ConvoManager(
             n_speakers=2,

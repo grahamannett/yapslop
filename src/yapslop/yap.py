@@ -1,3 +1,4 @@
+from functools import wraps
 import os
 import random
 from dataclasses import dataclass
@@ -9,7 +10,7 @@ import torchaudio
 
 from yapslop.convo_dto import ConvoTurn, Speaker, TextOptions
 from yapslop.convo_helpers import MessageType, generate_speaker_dict
-from yapslop.generator import load_csm_1b
+from yapslop.generator import load_csm_1b, Segment
 
 DEVICE: Literal["cuda", "cpu"] = "cuda" if torch.cuda.is_available() else "cpu"
 system_prompt_template = """
@@ -24,6 +25,22 @@ Follow these rules:
 5. Don't refer to yourself in the third person
 6. Keep the response length similar to the other responses.
 """
+
+# using _Providers as a registry, can store the type of provider, or use like "ollama" in future
+# avoid using too deep a structure for all of this as will make future threading/multiprocessing easier
+_Providers = {}
+
+
+def add_provider(name: str, use_dc: bool = True):
+    def decorator(func):  # move dataclass to this for slightly clearer code
+        _Providers[name] = dataclass(func) if use_dc else func
+        return func
+
+    return decorator
+
+
+def ProvidersSetup(configs: dict[str, dict]):
+    return [_Providers[key](**config) for key, config in configs.items()]
 
 
 def make_convo_system_prompt(speakers: list[Speaker]) -> str:
@@ -40,13 +57,16 @@ def make_convo_system_prompt(speakers: list[Speaker]) -> str:
 
 
 @dataclass
+class HTTPConfig:
+    base_url: str = "http://localhost:11434"
+
+
+@add_provider("text")
 class TextProvider:
     """Base class for model providers, can switch to using pydantic-ai/vllm/etc later"""
 
-    client: httpx.AsyncClient | None = None
-
+    client: httpx.AsyncClient
     model_name: str = "gemma3:latest"
-    base_url: str = "http://localhost:11434"
 
     def _from_resp(self, resp: httpx.Response) -> dict:
         resp.raise_for_status()
@@ -102,7 +122,7 @@ class TextProvider:
         return response_data
 
 
-@dataclass
+@add_provider("audio")
 class AudioProvider:
     repo_id: str = "sesame/csm-1b"
     device: str = DEVICE
@@ -118,7 +138,7 @@ class AudioProvider:
         self,
         text: str,
         speaker_id: int,
-        context_turns: list["ConvoTurn"] = [],
+        context: list[Segment] = [],
         max_audio_length_ms: int | None = None,
     ):
         """
@@ -133,21 +153,13 @@ class AudioProvider:
         Returns:
             torch.Tensor containing the generated audio
         """
-        # Convert ConvoTurn objects to CSM Segments if context is provided
-        context_segments = []
-        if context_turns:
-            for turn in context_turns:
-                if turn.audio is not None:
-                    context_segments.append(turn.to_segment())
 
-        generate_kwargs = {
-            "text": text,
-            "speaker": speaker_id,
-            "context": context_segments,
+        audio = self.generator.generate(
+            text=text,
+            speaker=speaker_id,
+            context=context,
             **({"max_audio_length_ms": max_audio_length_ms} if max_audio_length_ms else {}),
-        }
-
-        audio = self.generator.generate(**generate_kwargs)
+        )
 
         return audio
 
@@ -288,6 +300,7 @@ class ConvoManager:
         text: str | None = None,
         do_audio_generate: bool = True,
         save_audio: bool = True,
+        max_audio_length_ms: int | None = None,
     ) -> ConvoTurn:
         """
         Generate the next turn in the conversation.
@@ -311,16 +324,23 @@ class ConvoManager:
 
         # --- Generate Audio For the Turn
         if do_audio_generate and self.audio_provider:
-            # Get recent context turns with audio (limit to 3 for performance)
             context_turns = [t for t in self.history[:-1] if t.audio is not None]
 
             if self.limit_context_turns:
                 context_turns = context_turns[-self.limit_context_turns :]
 
+            # Convert ConvoTurn objects to CSM Segments if context is provided
+            context = []
+            if context_turns:
+                for turn in context_turns:
+                    if turn.audio is not None:
+                        context.append(turn.to_segment())
+
             turn.audio = self.audio_provider.generate_audio(
                 text=turn.text,
                 speaker_id=turn.speaker.speaker_id,
-                context_turns=context_turns,
+                context=context,
+                max_audio_length_ms=max_audio_length_ms,
             )
 
             turn = self._post_turn(turn, save_audio=save_audio)
@@ -336,6 +356,7 @@ class ConvoManager:
         initial_speaker: Speaker | None = None,
         do_audio_generate: bool = True,
         save_audio: bool = True,
+        max_audio_length_ms: int | None = None,
     ):
         """
         Generate a conversation with the specified number of turns as an async generator.
@@ -359,6 +380,7 @@ class ConvoManager:
                 speaker=speaker,
                 save_audio=save_audio,
                 do_audio_generate=do_audio_generate,
+                max_audio_length_ms=max_audio_length_ms,
             )
             yield turn
 
@@ -367,6 +389,7 @@ class ConvoManager:
                 speaker=self.select_next_speaker(),
                 do_audio_generate=do_audio_generate,
                 save_audio=save_audio,
+                max_audio_length_ms=max_audio_length_ms,
             )
             yield turn
             num_turns -= 1

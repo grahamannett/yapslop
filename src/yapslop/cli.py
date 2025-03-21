@@ -3,7 +3,8 @@ from pathlib import Path
 import httpx
 import asyncio
 
-from yapslop.yap import AudioProvider, ConvoManager, Speaker, TextProvider
+from yapslop.yap import ConvoManager, HTTPConfig, ProvidersSetup
+from yapslop.yap_common import initial_speakers
 
 
 def _setup_demo(audio_output_dir: str, cleanup_audio_dir: bool):
@@ -19,27 +20,25 @@ async def demo(
     initial_phrase: str = "Did you hear about that new conversational AI model that just came out?",
     audio_output_dir: str = "audio_output",
     cleanup_audio_dir: bool = True,
+    max_audio_length_ms: int = 300_000,
 ):
+    """
+    demo showing one initial speaker and then generate the rest of the speakers
+    """
+
     _setup_demo(audio_output_dir, cleanup_audio_dir)
 
-    # demo showing one initial speaker but then generate the rest of the speakers
-    speakers = [
-        Speaker(
-            name="Seraphina",
-            description="Tech entrepreneur. Uses technical jargon, speaks confidently",
-        ),
-    ]
-
-    # Create the text provider (using Ollama by default). Example using the streaming generator
-    audio_provider = AudioProvider()
-    text_provider = TextProvider()
-
-    async with httpx.AsyncClient(base_url=text_provider.base_url) as client:
-        text_provider.client = client
+    async with httpx.AsyncClient(base_url=HTTPConfig.base_url) as client:
+        text_provider, audio_provider = ProvidersSetup(
+            configs={
+                "text": {"client": client},
+                "audio": {},
+            }
+        )
 
         convo_manager = ConvoManager(
             n_speakers=n_speakers,
-            speakers=speakers,
+            speakers=initial_speakers,
             text_provider=text_provider,
             audio_provider=audio_provider,
             audio_output_dir=audio_output_dir,
@@ -55,6 +54,7 @@ async def demo(
             num_turns=num_turns,
             initial_phrase=initial_phrase,
             initial_speaker=initial_speaker,
+            max_audio_length_ms=max_audio_length_ms,
         ):
             print(f"{turn}")
             if turn.audio_path:
