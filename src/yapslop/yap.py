@@ -296,6 +296,20 @@ class ConvoManager:
 
         return random.choice([s for s in self.speakers if s != self.history[-1].speaker])
 
+    def _get_context(self) -> list[Segment]:
+        context_turns = [t for t in self.history[:-1] if t.audio is not None]
+
+        if self.limit_context_turns:
+            context_turns = context_turns[-self.limit_context_turns :]
+
+        # Convert ConvoTurn objects to CSM Segments if context is provided
+        context = []
+        if context_turns:
+            for turn in context_turns:
+                if turn.audio is not None:
+                    context.append(turn.to_segment())
+        return context
+
     async def generate_turn(
         self,
         speaker: Speaker,
@@ -319,24 +333,13 @@ class ConvoManager:
         if text is None:
             msgs = self._create_prompt_for_next_turn(speaker)
             text = await self.text_provider.chat_oai(messages=msgs, model_options=self.text_options)
-
             text = self._cleanup_text_turn(text=text, speaker=speaker)
 
         turn = ConvoTurn(speaker=speaker, text=text)
 
         # --- Generate Audio For the Turn
         if do_audio_generate and self.audio_provider:
-            context_turns = [t for t in self.history[:-1] if t.audio is not None]
-
-            if self.limit_context_turns:
-                context_turns = context_turns[-self.limit_context_turns :]
-
-            # Convert ConvoTurn objects to CSM Segments if context is provided
-            context = []
-            if context_turns:
-                for turn in context_turns:
-                    if turn.audio is not None:
-                        context.append(turn.to_segment())
+            context = self._get_context()
 
             turn.audio = self.audio_provider.generate_audio(
                 text=turn.text,
@@ -374,10 +377,10 @@ class ConvoManager:
         Yields:
             ConvoTurn objects one at a time as they are generated
         """
+
         # allow for the initial text and speaker to be passed in
-        if initial_text:
-            text = initial_text
-            speaker = initial_speaker
+        text = initial_text
+        speaker = initial_speaker
 
         while num_turns != 0:
             speaker = self.select_next_speaker(speaker=speaker)
@@ -391,8 +394,8 @@ class ConvoManager:
             yield turn
             # reset the phrase and speaker if passed in for next turn
             num_turns -= 1
-            speaker = None
             text = None
+            speaker = None
 
     def save_combined_audio(
         self,
