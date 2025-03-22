@@ -226,7 +226,8 @@ class ConvoManager:
 
     def _post_turn(self, turn: ConvoTurn, save_audio: bool) -> ConvoTurn:
         """Save the audio for the turn if the audio provider is set and the audio output dir is set"""
-        if save_audio and self.audio_provider and self.audio_output_dir:
+
+        if save_audio and self.audio_provider and self.audio_output_dir and turn.audio != None:
             audio_filename = f"turn_{len(self.history)}_speaker_{turn.speaker.speaker_id}.wav"
             turn.audio_path = f"{self.audio_output_dir}/{audio_filename}"
             self.audio_provider.save_audio(turn.audio, turn.audio_path)
@@ -244,13 +245,12 @@ class ConvoManager:
         Returns:
             List of message dictionaries for the API call
         """
+
         system_prompt = self.system_prompt
 
         if self.history:
-            system_prompt += "\n---\nPrevious conversation Turns:\n"
-
-            for turn in self.history:
-                system_prompt += f"{turn.speaker.name}: {turn.text}"
+            prev_convo = "\n".join([str(turn) for turn in self.history])
+            system_prompt = f"{system_prompt}\n\nPrevious Conversation:\n{prev_convo}"
 
         msgs = [{"role": "system", "content": system_prompt}]
         if next_speaker:
@@ -267,10 +267,11 @@ class ConvoManager:
         self, n_speakers: int | None = None, speakers: list[Speaker] = []
     ) -> list[Speaker]:
         """
-        Generate a list of speakers for the conversation.  Allows you to pass in speakers or
+        Generate a list of speakers for the conversation.  Allows you to pass in speakers and generate more
         """
-        # allow for passing in speakers or use the existing speakers
+
         n_speakers = n_speakers or self.n_speakers
+
         if self.speakers:
             speakers += self.speakers
 
@@ -329,13 +330,14 @@ class ConvoManager:
             ConvoTurn object containing the generated text and optionally audio
         """
         # --- Generate Text For the Turn, Optionally Provide the Text
+        turn = ConvoTurn(speaker=speaker)
 
         if text is None:
             msgs = self._create_prompt_for_next_turn(speaker)
             text = await self.text_provider.chat_oai(messages=msgs, model_options=self.text_options)
             text = self._cleanup_text_turn(text=text, speaker=speaker)
 
-        turn = ConvoTurn(speaker=speaker, text=text)
+        turn.text = text
 
         # --- Generate Audio For the Turn
         if do_audio_generate and self.audio_provider:

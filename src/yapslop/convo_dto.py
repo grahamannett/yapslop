@@ -44,7 +44,7 @@ class ConvoTurn:
     """
 
     speaker: Speaker
-    text: str
+    text: str | None = None
     # Add audio field to store generated audio
     audio: torch.Tensor | None = None
     audio_path: str | None = None
