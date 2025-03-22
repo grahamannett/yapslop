@@ -139,7 +139,7 @@ class AudioProvider:
         text: str,
         speaker_id: int,
         context: list[Segment] = [],
-        max_audio_length_ms: int | None = None,
+        max_audio_length_ms: int = 90_000,
     ):
         """
         Generate audio for the given text and speaker.
@@ -153,12 +153,11 @@ class AudioProvider:
         Returns:
             torch.Tensor containing the generated audio
         """
-
         audio = self.generator.generate(
             text=text,
             speaker=speaker_id,
             context=context,
-            **({"max_audio_length_ms": max_audio_length_ms} if max_audio_length_ms else {}),
+            max_audio_length_ms=max_audio_length_ms,
         )
 
         return audio
@@ -317,7 +316,7 @@ class ConvoManager:
         text: str | None = None,
         do_audio_generate: bool = True,
         save_audio: bool = True,
-        max_audio_length_ms: int | None = None,
+        max_audio_length_ms: int = 90_000,
     ) -> ConvoTurn:
         """
         Generate the next turn in the conversation.
@@ -342,14 +341,24 @@ class ConvoManager:
         # --- Generate Audio For the Turn
         if do_audio_generate and self.audio_provider:
             context = self._get_context()
+            try:
+                audio = self.audio_provider.generate_audio(
+                    text=turn.text,
+                    speaker_id=turn.speaker.speaker_id,
+                    context=context,
+                    max_audio_length_ms=max_audio_length_ms,
+                )
+            except Exception:
+                print(f"Error generating text: {turn.text}, shortening text")
+                turn.text = turn.text[:-30]
+                audio = self.audio_provider.generate_audio(
+                    text=turn.text,
+                    speaker_id=turn.speaker.speaker_id,
+                    context=context,
+                    max_audio_length_ms=max_audio_length_ms,
+                )
 
-            turn.audio = self.audio_provider.generate_audio(
-                text=turn.text,
-                speaker_id=turn.speaker.speaker_id,
-                context=context,
-                max_audio_length_ms=max_audio_length_ms,
-            )
-
+            turn.audio = audio
             turn = self._post_turn(turn, save_audio=save_audio)
 
         self.history.append(turn)
@@ -363,7 +372,7 @@ class ConvoManager:
         initial_speaker: Speaker | None = None,
         do_audio_generate: bool = True,
         save_audio: bool = True,
-        max_audio_length_ms: int | None = None,
+        max_audio_length_ms: int = 90_000,
     ):
         """
         Generate a conversation with the specified number of turns as an async generator.

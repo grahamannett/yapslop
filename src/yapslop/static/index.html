@@ -61,6 +61,8 @@
     <h1>yapslop</h1>
 
     <div class="controls">
+        <input type="text" id="initialPhrase" placeholder="Enter initial phrase..."
+            style="padding: 10px; width: 300px; margin-right: 10px;">
         <button id="playBtn">start</button>
         <button id="stopBtn" disabled>stop</button>
     </div>
@@ -75,6 +77,9 @@
         const status = document.getElementById('status');
         let ws = null;
         let currentAudio = null;
+        let audioQueue = [];
+        let isPlaying = false;
+        const initialPhraseInput = document.getElementById('initialPhrase');
 
         function updateStatus(message) {
             status.textContent = message;
@@ -88,18 +93,57 @@
             turn.scrollIntoView({ behavior: 'smooth' });
         }
 
+        function playNextInQueue() {
+            if (audioQueue.length === 0 || isPlaying) return;
+
+            isPlaying = true;
+            const audioData = audioQueue.shift();
+
+            if (currentAudio) {
+                currentAudio.pause();
+                URL.revokeObjectURL(currentAudio.src);
+            }
+
+            currentAudio = new Audio(audioData.url);
+
+            currentAudio.onended = () => {
+                isPlaying = false;
+                playNextInQueue(); // Play next audio in queue when this one ends
+            };
+
+            currentAudio.onerror = () => {
+                console.error("Error playing audio");
+                isPlaying = false;
+                playNextInQueue(); // Try next audio on error
+            };
+
+            currentAudio.play().catch(error => {
+                console.error("Error playing audio:", error);
+                isPlaying = false;
+                playNextInQueue();
+            });
+
+            // Always tell server we're ready for more
+            ws.send("next");
+        }
+
         playBtn.addEventListener('click', () => {
             if (ws) return;
 
             playBtn.disabled = true;
             stopBtn.disabled = false;
             conversation.innerHTML = ''; // Clear previous conversation
+            audioQueue = []; // Clear any queued audio
+            isPlaying = false;
             updateStatus('Connecting...');
 
             ws = new WebSocket(`ws://${window.location.host}/stream`);
 
             ws.onopen = () => {
                 updateStatus('Connected! Starting conversation...');
+                // Send initial phrase if provided
+                const initialPhrase = initialPhraseInput.value.trim();
+                ws.send(initialPhrase ? `initial:${initialPhrase}` : 'initial:');
             };
 
             ws.onmessage = async (event) => {
@@ -124,22 +168,13 @@
                     const blob = new Blob([arrayBuffer], { type: "audio/wav" });
                     const url = URL.createObjectURL(blob);
 
-                    if (currentAudio) {
-                        currentAudio.pause();
-                        URL.revokeObjectURL(currentAudio.src);
+                    // Add to queue instead of playing immediately
+                    audioQueue.push({ url });
+
+                    // Try to play if not already playing
+                    if (!isPlaying) {
+                        playNextInQueue();
                     }
-
-                    currentAudio = new Audio(url);
-                    currentAudio.onended = () => {
-                        ws.send("next");
-                    };
-
-                    currentAudio.onerror = () => {
-                        console.error("Error playing audio");
-                        ws.send("next");
-                    };
-
-                    await currentAudio.play();
                 } catch (error) {
                     console.error("Error handling audio:", error);
                     ws.send("next");
@@ -175,6 +210,14 @@
                 URL.revokeObjectURL(currentAudio.src);
                 currentAudio = null;
             }
+
+            // Clear audio queue and revoke all URLs
+            while (audioQueue.length > 0) {
+                const audio = audioQueue.shift();
+                URL.revokeObjectURL(audio.url);
+            }
+
+            isPlaying = false;
 
             if (ws) {
                 if (ws.readyState === WebSocket.OPEN) {

@@ -19,12 +19,14 @@ from yapslop.yap_common import initial_speakers
 
 STATIC_DIR = Path(__file__).parent / "static"  # avoid mounting static dir unless i add more html/js
 
-app_lifespan = {"http_config": HTTPConfig()}
+app_lifespan = {
+    "initial_text": "Did you hear about that new conversational AI model that just came out?",
+}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    async with httpx.AsyncClient(base_url=app_lifespan["http_config"].base_url) as client:
+    async with httpx.AsyncClient(base_url=HTTPConfig.base_url) as client:
         text_provider, audio_provider = ProvidersSetup(
             configs={
                 "text": {"client": client},
@@ -41,10 +43,10 @@ async def lifespan(app: FastAPI):
         )
 
         await convo_manager.setup_speakers()
+        print("Speakers", [s.name for s in convo_manager.speakers])
 
-        initial_speaker = convo_manager.speakers[0]
         app_lifespan["convo_manager"] = convo_manager
-        app_lifespan["initial_speaker"] = initial_speaker
+        app_lifespan["initial_speaker"] = convo_manager.speakers[0]
         yield
 
 
@@ -55,38 +57,46 @@ app = FastAPI(lifespan=lifespan)
 async def stream_audio(websocket: WebSocket):
     """Stream generated conversation audio over WebSocket connection."""
 
-    async def audio_tensor_to_wav_bytes(audio_tensor: torch.Tensor, sample_rate: int) -> bytes:
+    def audio_tensor_to_wav_bytes(audio_tensor: torch.Tensor, sample_rate: int) -> bytes:
         """Convert audio tensor to WAV bytes for streaming"""
         buffer = io.BytesIO()
         torchaudio.save(buffer, audio_tensor.unsqueeze(0).cpu(), sample_rate, format="wav")
         buffer.seek(0)
         return buffer.read()
 
+    def get_initial_text(msg: str) -> str:
+        if msg.startswith("initial:"):
+            return msg[8:].strip()
+        # Default initial phrase if none is provided by the client
+        return app_lifespan["initial_text"]
+
     await websocket.accept()
 
     try:
         convo_manager = app_lifespan["convo_manager"]
-        initial_speaker = convo_manager.speakers[0]
+        initial_speaker = app_lifespan["initial_speaker"]
+
+        # Wait for the initial message from the client
+        first_msg = await websocket.receive_text()
+
+        initial_text = get_initial_text(first_msg)
 
         await websocket.send_text("Starting conversation stream...")
 
-        # Start conversation with initial phrase
-        initial_text = "Did you hear about that new conversational AI model that just came out?"
-
         async for turn in convo_manager.generate_convo_stream(
-            num_turns=-1,
+            num_turns=-1,  # -1 means infinite
             initial_text=initial_text,
             initial_speaker=initial_speaker,
             save_audio=False,
         ):
             try:
-                print(f"speaking:{turn.speaker.name}:{turn.text}")
                 await websocket.send_text(f"speaking:{turn.speaker.name}:{turn.text}")
 
                 # Convert audio tensor to WAV bytes and stream
                 if turn.audio is not None:
-                    audio_bytes = await audio_tensor_to_wav_bytes(
-                        turn.audio, convo_manager.audio_provider.sample_rate
+                    audio_bytes = audio_tensor_to_wav_bytes(
+                        turn.audio,
+                        convo_manager.audio_provider.sample_rate,
                     )
                     await websocket.send_bytes(audio_bytes)
 
@@ -126,4 +136,4 @@ async def serve_index():
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run("server:app", host="0.0.0.0", port=8000, reload=True)
