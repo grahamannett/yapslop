@@ -16,12 +16,17 @@ e.g. 'Tech entrepreneur who speaks in technical jargon, speaks confidently'
 """
 
 
-def msg_helper(*msgs: Sequence[str] | str, system: str | None = None) -> MessageType:
+def _msg_role(i: int) -> str:
+    return "user" if i % 2 == 0 else "assistant"
+
+
+def make_messages(*msgs: Sequence[str] | str, system: str | None = None) -> MessageType:
     out = []
+
     if system:
-        out.append({"role": "system", "content": system})
-    for i, m in enumerate(msgs):
-        out.append({"role": "user" if i % 2 == 0 else "assistant", "content": m})
+        out += [{"role": "system", "content": system}]
+
+    out += [{"role": _msg_role(i), "content": m} for i, m in enumerate(msgs)]
     return out
 
 
@@ -47,7 +52,7 @@ async def generate_speaker(
     speaker_names = f"Speakers so far: {', '.join(s.name for s in speakers)}" if speakers else ""
 
     prompt = gen_speaker_prompt.format(speaker_names=speaker_names)
-    messages = msg_helper(prompt, system=gen_speaker_system_prompt)
+    messages = make_messages(prompt, system=gen_speaker_system_prompt)
 
     try:
         response = await chat_func(messages=messages, stream=False)

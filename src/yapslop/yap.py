@@ -1,28 +1,36 @@
-from functools import wraps
 import os
 import random
+import re
+from collections import deque
 from dataclasses import dataclass
-from typing import Literal
+from itertools import count
+from typing import AsyncGenerator, Iterable, Literal
 
 import httpx
 import torch
 import torchaudio
 
 from yapslop.convo_dto import ConvoTurn, Speaker, TextOptions
-from yapslop.convo_helpers import MessageType, generate_speaker
-from yapslop.generator import load_csm_1b, Segment
+from yapslop.convo_helpers import MessageType, generate_speaker, make_messages
+from yapslop.generator import Segment, load_csm_1b
 
 DEVICE: Literal["cuda", "cpu"] = "cuda" if torch.cuda.is_available() else "cpu"
-simulator_system_prompt = """You are simulating a conversation between the following characters:{speakers_desc}
+
+# --- prompts
+# - simulator_system_prompt: the system prompt for the simulator
+# - shorter_system_prompt: the system prompt to shorten text
+
+simulator_system_prompt = """You are simulating a conversation between the following characters:{convo_speaker_desc}
 
 Follow these rules:
 1. Respond ONLY as the designated speaker for each turn
 2. Stay in character at all times and don't refer to yourself in the third person
 3. Keep responses concise (similar in length to the prior response length) and natural-sounding
 4. Don't narrate actions or use quotation marks
-"""
 
-convo_system_prompt = """"""
+Previous Conversation:
+{convo_history}
+"""
 
 shorter_system_prompt = """Create a shorter version of the following text.
 Keep the same meaning and return ONLY the text in a more concise form"""
@@ -42,13 +50,6 @@ def add_provider(name: str, use_dc: bool = True):
 
 def ProvidersSetup(configs: dict[str, dict]):
     return [_Providers[key](**config) for key, config in configs.items()]
-
-
-def make_convo_system_prompt(speakers: list[Speaker]) -> str:
-    desc = ""
-    for sp in speakers:
-        desc += f"\n- {sp.name} : {sp.description}"
-    return simulator_system_prompt.format(speakers_desc=desc)
 
 
 @dataclass
@@ -170,13 +171,15 @@ class ConvoManager:
     Manages a simulated conversation between multiple speakers using a language model.
     """
 
+    convo_system_prompt: str
+    convo_speaker_desc: str
+
     def __init__(
         self,
         text_provider: TextProvider,
         audio_provider: AudioProvider | None = None,
         n_speakers: int = 2,
         speakers: list[Speaker] = [],
-        system_prompt: str = "",
         max_tokens: int = 300,
         temperature: float = 0.7,
         audio_output_dir: str | None = None,
@@ -207,18 +210,26 @@ class ConvoManager:
         # Default system prompt if none provided
         self.speakers = speakers
         self.n_speakers = n_speakers
-        self.system_prompt = system_prompt
 
         self.history: list[ConvoTurn] = []
         self.limit_context_turns = limit_context_turns
 
+        # context queue is used for audio generation to have consistent sounds
+        self.context_queue = deque(maxlen=self.limit_context_turns)
+
         if self.audio_output_dir:
             os.makedirs(self.audio_output_dir, exist_ok=True)
 
-    def _cleanup_text_turn(self, text: str, speaker: Speaker) -> str:
-        """Remove the speaker name from the text if it's at the beginning of the text"""
-        if text.startswith(f"{speaker.name}:"):
-            text = text[len(f"{speaker.name}:") :].strip()
+    def _clean_generated_text(self, text: str, speaker: Speaker) -> str:
+        """
+        Remove the speaker name from the text if it's at the beginning of the text
+
+        This isn't necessary given I changed the prompt formatting, but if switching prompts,
+        should have a way to clean the model text to be more consistent.
+        Removes {speaker.name}: or {speaker.name}\n from the beginning of the text
+
+        """
+        text = re.sub(f"^{speaker.name}[:|\n]\\s*", "", text).strip()
         return text
 
     def _post_turn(self, turn: ConvoTurn, save_audio: bool) -> ConvoTurn:
@@ -228,38 +239,15 @@ class ConvoManager:
             audio_filename = f"turn_{len(self.history)}_speaker_{turn.speaker.speaker_id}.wav"
             turn.audio_path = f"{self.audio_output_dir}/{audio_filename}"
             self.audio_provider.save_audio(turn.audio, turn.audio_path)
+
+        if turn.audio is not None:
+            self.context_queue.append(turn.to_segment())
+
         return turn
 
     async def _create_shorter_text(self, text: str) -> str:
-        msg = [
-            {"role": "system", "content": shorter_system_prompt},
-            {"role": "user", "content": text},
-        ]
-        return await self.text_provider.chat_oai(messages=msg, model_options=self.text_options)
-
-    def _create_msgs_for_next_turn(
-        self, next_speaker: Speaker | None = None
-    ) -> list[dict[str, str]]:
-        """
-        Create the prompt for the next turn in the conversation.
-
-        Args:
-            next_speaker: The speaker who will generate the next turn
-
-        Returns:
-            List of message dictionaries for the API call
-        """
-
-        if self.history:
-            prev_convo = "\n".join([str(turn) for turn in self.history])
-            system_prompt = f"{self.system_prompt}\nPrevious Conversation:\n{prev_convo}"
-
-        msgs = [{"role": "system", "content": system_prompt}]
-
-        if next_speaker:
-            msgs += [{"role": "user", "content": f"{next_speaker.name}:"}]
-
-        return msgs
+        messages = make_messages(shorter_system_prompt, text)
+        return await self.text_provider.chat_oai(messages=messages, model_options=self.text_options)
 
     async def setup_speakers(
         self, n_speakers: int | None = None, speakers: list[Speaker] | None = None
@@ -268,12 +256,6 @@ class ConvoManager:
         Generate a list of speakers for the conversation.
         Allows you to pass in speakers and generate more, also generates a system prompt if none is used
         """
-
-        def _fmt_speakers(sps):
-            sp_line = ""
-            for sp in sps:
-                sp_line += f"\n- {sp.name} : {sp.description}"
-            return simulator_system_prompt.format(speakers_desc=sp_line)
 
         n_speakers = n_speakers or self.n_speakers
         speakers = speakers or []
@@ -285,7 +267,10 @@ class ConvoManager:
         for _ in range(len(speakers), n_speakers):
             speakers.append(await generate_speaker(self.text_provider.chat_ollama, speakers))
 
-        self.system_prompt = self.system_prompt or _fmt_speakers(speakers)
+        # setup the system prompt that contains the speaker descriptions and rules
+        self.convo_speaker_desc = ""
+        for speaker in speakers:
+            self.convo_speaker_desc += f"\n- {speaker.name} : {speaker.description}"
 
         # update the speakers to be the new speakers (+ potentially pre-defined speakers)
         self.speakers = speakers
@@ -294,7 +279,7 @@ class ConvoManager:
     def select_next_speaker(self, speaker: Speaker | None = None) -> Speaker:
         """
         Select the next speaker for the conversation.
-        By default, rotates through speakers in order, avoiding consecutive turns.
+        Picks a random speaker if no speaker is provided, or if the speaker is not in the history
         """
 
         if speaker:
@@ -305,23 +290,9 @@ class ConvoManager:
 
         return random.choice([s for s in self.speakers if s != self.history[-1].speaker])
 
-    def _get_context(self) -> list[Segment]:
-        context_turns = [t for t in self.history[:-1] if t.audio is not None]
-
-        if self.limit_context_turns:
-            context_turns = context_turns[-self.limit_context_turns :]
-
-        # Convert ConvoTurn objects to CSM Segments if context is provided
-        context = []
-        if context_turns:
-            for turn in context_turns:
-                if turn.audio is not None:
-                    context.append(turn.to_segment())
-        return context
-
     async def generate_turn(
         self,
-        speaker: Speaker,
+        speaker: Speaker | None = None,
         text: str | None = None,
         do_audio_generate: bool = True,
         save_audio: bool = True,
@@ -332,24 +303,39 @@ class ConvoManager:
 
         Args:
             speaker: Optional speaker to force as the next speaker
-            generate_audio: Whether to generate audio for this turn
+            text: Optional text to force as the next text
+            do_audio_generate: Whether to generate audio for this turn
+            save_audio: Whether to save the audio for this turn
+            max_audio_length_ms: Maximum audio length in milliseconds
 
         Returns:
             ConvoTurn object containing the generated text and optionally audio
         """
-        # --- Generate Text For the Turn, Optionally Provide the Text
+        if not speaker:
+            speaker = self.select_next_speaker()
+
         turn = ConvoTurn(speaker=speaker)
 
+        # --- Generate Text For the Turn if none provided
         if text is None:
-            msgs = self._create_msgs_for_next_turn(speaker)
+            convo_history = "\n".join([str(turn) for turn in self.history])
+
+            convo_system_prompt = simulator_system_prompt.format(
+                convo_speaker_desc=self.convo_speaker_desc,
+                convo_history=convo_history,
+            )
+
+            msgs = make_messages(f"{speaker.name}:", system=convo_system_prompt)
+
             text = await self.text_provider.chat_oai(messages=msgs, model_options=self.text_options)
-            text = self._cleanup_text_turn(text=text, speaker=speaker)
+            text = self._clean_generated_text(text=text, speaker=speaker)
 
         turn.text = text
 
         # --- Generate Audio For the Turn
         if do_audio_generate and self.audio_provider:
-            context = self._get_context()
+            context = list(self.context_queue)
+
             try:
                 audio = self.audio_provider.generate_audio(
                     text=turn.text,
@@ -376,13 +362,13 @@ class ConvoManager:
 
     async def generate_convo_stream(
         self,
-        num_turns: int,
+        num_turns: int | Iterable,
         initial_text: str | None = None,
         initial_speaker: Speaker | None = None,
         do_audio_generate: bool = True,
         save_audio: bool = True,
         max_audio_length_ms: int = 90_000,
-    ):
+    ) -> AsyncGenerator[ConvoTurn, None]:
         """
         Generate a conversation with the specified number of turns as an async generator.
         Yields each turn immediately after it's generated for real-time processing.
@@ -402,8 +388,16 @@ class ConvoManager:
         text = initial_text
         speaker = initial_speaker
 
-        while num_turns != 0:
-            speaker = self.select_next_speaker(speaker=speaker)
+        # allow for the number of turns to be a count, a range, or an iterable
+        match num_turns:
+            case -1:
+                num_turns = count()
+            case int():
+                num_turns = range(num_turns)
+            case Iterable():
+                num_turns = num_turns
+
+        for t_idx in num_turns:
             turn = await self.generate_turn(
                 text=text,
                 speaker=speaker,
@@ -411,8 +405,8 @@ class ConvoManager:
                 do_audio_generate=do_audio_generate,
                 max_audio_length_ms=max_audio_length_ms,
             )
+            turn.turn_idx = t_idx
             yield turn
-            # reset the phrase and speaker if passed in for next turn
-            num_turns -= 1
+            # reset the phrase and speaker for the next turn
             text = None
             speaker = None

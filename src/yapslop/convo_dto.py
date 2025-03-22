@@ -48,6 +48,7 @@ class ConvoTurn:
     # Add audio field to store generated audio
     audio: torch.Tensor | None = None
     audio_path: str | None = None
+    turn_idx: int = 0
 
     def __str__(self) -> str:
         return f"{self.speaker.name}: {self.text}"
