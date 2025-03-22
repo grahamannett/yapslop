@@ -22,7 +22,7 @@ async def demo(
     initial_text: str = "Did you hear about that new conversational AI model that just came out?",
     audio_output_dir: str = "audio_output",
     cleanup_audio_dir: bool = True,
-    max_audio_length_ms: int = 300_000,
+    max_audio_length_ms: int = 90_000,
 ):
     """
     demo showing one initial speaker and then generate the rest of the speakers
