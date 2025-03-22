@@ -1,9 +1,7 @@
 import json
 import re
-from typing import Sequence, TypeAlias, TYPE_CHECKING
-
-if TYPE_CHECKING:  # to avoid circular imports since initially was trying to utilize 1 file
-    from yapslop.yap import ConvoTurn, TextProvider, Speaker
+from typing import Sequence, TypeAlias, Callable, Any
+from yapslop.convo_dto import ConvoTurn, Speaker
 
 MessageType: TypeAlias = list[dict[str, str]]
 
@@ -27,22 +25,35 @@ def msg_helper(*msgs: Sequence[str] | str, system: str | None = None) -> Message
     return out
 
 
-def get_conversation_as_string(history: list["ConvoTurn"]) -> str:  # type: ignore
+def get_conversation_as_string(history: list[ConvoTurn]) -> str:  # type: ignore
     return "\n".join([str(turn) for turn in history])
 
 
-async def generate_speaker_dict(text_provider: "TextProvider", speakers: list["Speaker"] = []):
-    # create the list of speaker names for the prompt, possible to put on either system prompt or user prompt
-    speaker_names = ""
-    if speakers:
-        speaker_names = "Speakers so far: "
-        speaker_names += ", ".join([s.name for s in speakers])
+async def generate_speaker(
+    chat_func: Callable[..., Any], speakers: list[Speaker] | None = None
+) -> Speaker:
+    """
+    Generate a new speaker character using a language model.
+
+    Args:
+        text_provider: The text provider to use for generating the speaker
+        speakers: Optional list of existing speakers to avoid duplication
+
+    Returns:
+        A dictionary containing the speaker properties
+    """
+    speakers = speakers or []
+
+    speaker_names = f"Speakers so far: {', '.join(s.name for s in speakers)}" if speakers else ""
 
     prompt = gen_speaker_prompt.format(speaker_names=speaker_names)
-
     messages = msg_helper(prompt, system=gen_speaker_system_prompt)
-    response = await text_provider.chat_ollama(messages=messages, stream=False)
-    return parse_json_content(response)
+
+    try:
+        response = await chat_func(messages=messages, stream=False)
+        return Speaker(**parse_json_content(response))
+    except Exception as e:
+        raise ValueError(f"Failed to generate speaker: {e}") from e
 
 
 def parse_json_content(content: str | dict) -> dict:
@@ -55,13 +66,15 @@ def parse_json_content(content: str | dict) -> dict:
     if isinstance(content, dict):
         content = content.get("message", content).get("content", content)
 
+    if not isinstance(content, str):
+        raise ValueError(f"Expected string content, got {type(content)}: {content}")
+
     # check if the content has a ```json block which we should extract
-    if "```json" in content:
-        if json_match := re.search(r"```(?:json)?\n(.*?)\n```", content, re.DOTALL):  # type: ignore
-            content = json_match.group(1)
-        else:
-            raise json.JSONDecodeError(f"Error with: '```json' block", doc=content, pos=0)  # type: ignore
+    if "```" in content:
+        match = re.search(r"```(?:json)?\n(.*?)\n```", content, re.DOTALL)
+        content = match.group(1) if match else content
+
     try:
         return json.loads(content)  # type: ignore
     except json.JSONDecodeError:
-        raise json.JSONDecodeError(f"Invalid JSON content: {content}", doc=content, pos=0)  # type: ignore
+        raise json.JSONDecodeError("Invalid JSON content", doc=str(content), pos=0)

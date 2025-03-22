@@ -9,12 +9,11 @@ import torch
 import torchaudio
 
 from yapslop.convo_dto import ConvoTurn, Speaker, TextOptions
-from yapslop.convo_helpers import MessageType, generate_speaker_dict
+from yapslop.convo_helpers import MessageType, generate_speaker
 from yapslop.generator import load_csm_1b, Segment
 
 DEVICE: Literal["cuda", "cpu"] = "cuda" if torch.cuda.is_available() else "cpu"
-simulator_system_prompt = """You are simulating a conversation between the following characters:
-{speakers_desc}
+simulator_system_prompt = """You are simulating a conversation between the following characters:{speakers_desc}
 
 Follow these rules:
 1. Respond ONLY as the designated speaker for each turn
@@ -22,6 +21,8 @@ Follow these rules:
 3. Keep responses concise (similar in length to the prior response length) and natural-sounding
 4. Don't narrate actions or use quotation marks
 """
+
+convo_system_prompt = """"""
 
 shorter_system_prompt = """Create a shorter version of the following text.
 Keep the same meaning and return ONLY the text in a more concise form"""
@@ -32,11 +33,11 @@ _Providers = {}
 
 
 def add_provider(name: str, use_dc: bool = True):
-    def decorator(func):  # move dataclass to this for slightly clearer code
+    def wrapper(func):  # move dataclass to this for slightly clearer code
         _Providers[name] = dataclass(func) if use_dc else func
         return func
 
-    return decorator
+    return wrapper
 
 
 def ProvidersSetup(configs: dict[str, dict]):
@@ -44,16 +45,10 @@ def ProvidersSetup(configs: dict[str, dict]):
 
 
 def make_convo_system_prompt(speakers: list[Speaker]) -> str:
-    def format_speaker(speaker: Speaker) -> str:
-        prompt = f"{speaker.name}"
-        if speakers_desc := getattr(speaker, "description", None):
-            prompt += f" ({speakers_desc})"
-        if speakers_style := getattr(speaker, "speaking_style", None):
-            prompt += f"\nSpeaking style: {speakers_style}"
-        return prompt
-
-    speakers_desc = "\n\n".join(format_speaker(speaker) for speaker in speakers)
-    return simulator_system_prompt.format(speakers_desc=speakers_desc)
+    desc = ""
+    for sp in speakers:
+        desc += f"\n- {sp.name} : {sp.description}"
+    return simulator_system_prompt.format(speakers_desc=desc)
 
 
 @dataclass
@@ -267,23 +262,33 @@ class ConvoManager:
         return msgs
 
     async def setup_speakers(
-        self, n_speakers: int | None = None, speakers: list[Speaker] = []
+        self, n_speakers: int | None = None, speakers: list[Speaker] | None = None
     ) -> list[Speaker]:
         """
-        Generate a list of speakers for the conversation.  Allows you to pass in speakers and generate more
+        Generate a list of speakers for the conversation.
+        Allows you to pass in speakers and generate more, also generates a system prompt if none is used
         """
 
-        n_speakers = n_speakers or self.n_speakers
+        def _fmt_speakers(sps):
+            sp_line = ""
+            for sp in sps:
+                sp_line += f"\n- {sp.name} : {sp.description}"
+            return simulator_system_prompt.format(speakers_desc=sp_line)
 
+        n_speakers = n_speakers or self.n_speakers
+        speakers = speakers or []
+
+        # if we have pre-defined speakers, add them to the list
         if self.speakers:
             speakers += self.speakers
 
         for _ in range(len(speakers), n_speakers):
-            speaker = await generate_speaker_dict(self.text_provider, speakers=speakers)
-            speakers.append(Speaker(**speaker))
+            speakers.append(await generate_speaker(self.text_provider.chat_ollama, speakers))
 
+        self.system_prompt = self.system_prompt or _fmt_speakers(speakers)
+
+        # update the speakers to be the new speakers (+ potentially pre-defined speakers)
         self.speakers = speakers
-        self.system_prompt = self.system_prompt or make_convo_system_prompt(speakers)
         return speakers
 
     def select_next_speaker(self, speaker: Speaker | None = None) -> Speaker:
@@ -411,62 +416,3 @@ class ConvoManager:
             num_turns -= 1
             text = None
             speaker = None
-
-    def save_combined_audio(
-        self,
-        output_path: str,
-        turns: list[ConvoTurn] | None = None,
-        add_silence_ms: int = 500,
-    ) -> str:
-        """
-        Combine audio from multiple conversation turns into a single audio file with silence between each turn.
-
-        Args:
-            output_path: Path where the combined audio file will be saved
-            turns: Optional list of ConvoTurn objects containing audio to combine. If None, uses self.history
-            add_silence_ms: Milliseconds of silence to insert between each turn. Defaults to 500ms
-
-        Returns:
-            str: Path to the saved combined audio file
-
-        Raises:
-            ValueError: If no audio provider is initialized or if no turns with audio are found
-        """
-        if self.audio_provider is None:
-            raise ValueError("Audio provider not initialized")
-
-        # Use provided turns or conversation history
-        turns = turns or self.history
-
-        # Extract audio tensors from turns that have audio
-        audio_tensors = [turn.audio for turn in turns if turn.audio is not None]
-
-        if not audio_tensors:
-            raise ValueError("No turns with audio found")
-
-        # Calculate silence samples
-        silence_samples = int(self.audio_provider.sample_rate * add_silence_ms / 1000)
-        silence = torch.zeros(silence_samples, device=self.audio_provider.device)
-
-        # Combine audio tensors with silence between them
-        combined_tensors = []
-        for i, audio in enumerate(audio_tensors):
-            combined_tensors.append(audio)
-            # Add silence after each segment except the last
-            if i < len(audio_tensors) - 1:
-                combined_tensors.append(silence)
-
-        # Concatenate all audio tensors along the time dimension
-        final_audio = torch.cat(combined_tensors)
-
-        # Create directory if it doesn't exist
-        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-
-        # Save the combined audio
-        torchaudio.save(
-            output_path,
-            final_audio.unsqueeze(0).cpu(),  # Add channel dimension and ensure on CPU
-            self.audio_provider.sample_rate,
-        )
-
-        return output_path
