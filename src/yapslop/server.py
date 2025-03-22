@@ -3,6 +3,7 @@ import io
 import traceback
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 import httpx
 import torch
@@ -15,17 +16,28 @@ from yapslop.yap import (
     HTTPConfig,
     ProvidersSetup,
 )
+from yapslop.convo_dto import Speaker
 from yapslop.yap_common import initial_speakers
 
 STATIC_DIR = Path(__file__).parent / "static"  # avoid mounting static dir unless i add more html/js
 
-app_lifespan = {
+# Use a typed dictionary to store app state
+app_state: dict[str, Any] = {
     "initial_text": "Did you hear about that new conversational AI model that just came out?",
 }
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+    Lifecycle manager for the FastAPI application.
+
+    Sets up the conversation manager and providers that will be used throughout
+    the application's lifetime.
+
+    Args:
+        app: The FastAPI application instance
+    """
     async with httpx.AsyncClient(base_url=HTTPConfig.base_url) as client:
         text_provider, audio_provider = ProvidersSetup(
             configs={
@@ -43,10 +55,10 @@ async def lifespan(app: FastAPI):
         )
 
         await convo_manager.setup_speakers()
-        print("Speakers", [s.name for s in convo_manager.speakers])
+        print(f"Speakers: {[s.name for s in convo_manager.speakers]}")
 
-        app_lifespan["convo_manager"] = convo_manager
-        app_lifespan["initial_speaker"] = convo_manager.speakers[0]
+        app_state["convo_manager"] = convo_manager
+        app_state["initial_speaker"] = convo_manager.speakers[0]
         yield
 
 
@@ -55,26 +67,53 @@ app = FastAPI(lifespan=lifespan)
 
 @app.websocket("/stream")
 async def stream_audio(websocket: WebSocket):
-    """Stream generated conversation audio over WebSocket connection."""
+    """
+    Stream generated conversation audio over WebSocket connection.
+
+    Handles the WebSocket connection for streaming AI-generated conversation,
+    including both text and audio. The client can provide an initial prompt
+    and receives turn-by-turn updates of the conversation.
+
+    Args:
+        websocket: The WebSocket connection to the client
+    """
 
     def audio_tensor_to_wav_bytes(audio_tensor: torch.Tensor, sample_rate: int) -> bytes:
-        """Convert audio tensor to WAV bytes for streaming"""
+        """
+        Convert audio tensor to WAV bytes for streaming.
+
+        Args:
+            audio_tensor: The audio tensor to convert
+            sample_rate: The sample rate of the audio
+
+        Returns:
+            Byte representation of the audio in WAV format
+        """
         buffer = io.BytesIO()
         torchaudio.save(buffer, audio_tensor.unsqueeze(0).cpu(), sample_rate, format="wav")
         buffer.seek(0)
         return buffer.read()
 
     def get_initial_text(msg: str) -> str:
+        """
+        Extract the initial conversation prompt from the client message.
+
+        Args:
+            msg: The message from the client, potentially containing an initial prompt
+
+        Returns:
+            The extracted initial text or the default prompt
+        """
         if msg.startswith("initial:"):
             return msg[8:].strip()
         # Default initial phrase if none is provided by the client
-        return app_lifespan["initial_text"]
+        return app_state["initial_text"]
 
     await websocket.accept()
 
     try:
-        convo_manager = app_lifespan["convo_manager"]
-        initial_speaker = app_lifespan["initial_speaker"]
+        convo_manager: ConvoManager = app_state["convo_manager"]
+        initial_speaker: Speaker = app_state["initial_speaker"]
 
         # Wait for the initial message from the client
         first_msg = await websocket.receive_text()
@@ -102,10 +141,10 @@ async def stream_audio(websocket: WebSocket):
 
                     # Wait for client to confirm receipt before continuing
                     msg = await websocket.receive_text()
-                    if msg != "next":
+                    if msg == "stop":
+                        break
+                    elif msg != "next":
                         print(f"Unexpected message from client: {msg}")
-                        if msg == "stop":
-                            break
 
             except Exception as e:
                 error_msg = f"Error streaming turn: {str(e)}"
@@ -124,12 +163,19 @@ async def stream_audio(websocket: WebSocket):
         traceback.print_exc()
         try:
             await websocket.send_text(f"error:{error_msg}")
-        except:
+        except Exception:
+            # Use a bare except only for this final error handling attempt
             pass
 
 
 @app.get("/")
 async def serve_index():
+    """
+    Serve the main index.html page for the web interface.
+
+    Returns:
+        The index.html file from the static directory
+    """
     return FileResponse(STATIC_DIR / "index.html")
 
 

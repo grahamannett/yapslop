@@ -17,10 +17,29 @@ e.g. 'Tech entrepreneur who speaks in technical jargon, speaks confidently'
 
 
 def _msg_role(i: int) -> str:
+    """
+    Determine message role based on index position.
+
+    Args:
+        i: Index position in message sequence
+
+    Returns:
+        "user" for even indices, "assistant" for odd indices
+    """
     return "user" if i % 2 == 0 else "assistant"
 
 
 def make_messages(*msgs: Sequence[str] | str, system: str | None = None) -> MessageType:
+    """
+    Create a list of message dictionaries for chat API input.
+
+    Args:
+        *msgs: Variable number of message strings or sequences
+        system: Optional system prompt to include at start
+
+    Returns:
+        List of message dictionaries with role and content
+    """
     out = []
 
     if system:
@@ -31,6 +50,15 @@ def make_messages(*msgs: Sequence[str] | str, system: str | None = None) -> Mess
 
 
 def get_conversation_as_string(history: list[ConvoTurn]) -> str:  # type: ignore
+    """
+    Convert conversation history to a string representation.
+
+    Args:
+        history: List of conversation turns
+
+    Returns:
+        String containing all turns concatenated with newlines
+    """
     return "\n".join([str(turn) for turn in history])
 
 
@@ -41,11 +69,14 @@ async def generate_speaker(
     Generate a new speaker character using a language model.
 
     Args:
-        text_provider: The text provider to use for generating the speaker
+        chat_func: Async function that interfaces with the language model
         speakers: Optional list of existing speakers to avoid duplication
 
     Returns:
-        A dictionary containing the speaker properties
+        A Speaker object with generated name and description
+
+    Raises:
+        ValueError: If speaker generation or JSON parsing fails
     """
     speakers = speakers or []
 
@@ -63,10 +94,18 @@ async def generate_speaker(
 
 def parse_json_content(content: str | dict) -> dict:
     """
-    since tool use can be iffy with the models I have been using, its worth trying to just ask the
-    model to explicitly output the json info
-    """
+    Parse JSON content from model response, handling various formats.
 
+    Args:
+        content: Raw response from model as string or dict
+
+    Returns:
+        Parsed JSON dictionary
+
+    Raises:
+        ValueError: If content is not a string or dict
+        JSONDecodeError: If content cannot be parsed as valid JSON
+    """
     # if pass in the raw response, extract the content
     if isinstance(content, dict):
         content = content.get("message", content).get("content", content)

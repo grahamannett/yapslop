@@ -11,6 +11,13 @@ _line_sep = "-" * 50
 
 
 def _setup_demo(audio_output_dir: str, cleanup_audio_dir: bool):
+    """
+    Set up the audio output directory for the demo.
+
+    Args:
+        audio_output_dir: Directory path where audio files will be saved
+        cleanup_audio_dir: If True, removes any existing WAV files in the directory
+    """
     if cleanup_audio_dir and (_dir := Path(audio_output_dir)):
         _dir.mkdir(parents=True, exist_ok=True)
         _ = [f.unlink() for f in _dir.glob("*.wav")]
@@ -27,7 +34,20 @@ async def demo(
     max_audio_length_ms: int = 90_000,
 ):
     """
-    demo showing one initial speaker and then generate the rest of the speakers
+    Demonstrate a multi-speaker conversation with audio generation.
+
+    This function sets up a conversation with one initial speaker and generates
+    additional speakers as needed. It streams the conversation turn by turn,
+    generating both text and audio for each turn.
+
+    Args:
+        n_speakers: Total number of speakers to include in the conversation
+        num_turns: Number of conversation turns to generate
+        initial_text: The starting text for the conversation
+        audio_output_dir: Directory where individual audio files will be saved
+        combined_audio_file: Filename for the combined audio of all turns
+        cleanup_audio_dir: If True, cleans up existing audio files before starting
+        max_audio_length_ms: Maximum length of generated audio in milliseconds
     """
 
     _setup_demo(audio_output_dir, cleanup_audio_dir)

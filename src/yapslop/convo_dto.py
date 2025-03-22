@@ -8,6 +8,16 @@ from yapslop.generator import Segment
 
 
 def load_audio(audio_path: str, new_freq: int = 24_000) -> torch.Tensor:
+    """
+    Load an audio file and resample it to the specified frequency.
+
+    Args:
+        audio_path: Path to the audio file to load
+        new_freq: Target sample rate to resample to (default: 24kHz)
+
+    Returns:
+        Resampled audio tensor
+    """
     audio_tensor, sample_rate = torchaudio.load(audio_path)
     return torchaudio.functional.resample(
         audio_tensor.squeeze(0), orig_freq=sample_rate, new_freq=new_freq
@@ -27,6 +37,12 @@ class Speaker:
 
     @classmethod
     def _get_next_id(cls) -> int:
+        """
+        Generate the next sequential speaker ID.
+
+        Returns:
+            The next available speaker ID
+        """
         cls._next_id += 1
         return cls._next_id - 1
 
@@ -34,6 +50,12 @@ class Speaker:
         return f"{self.name}"
 
     def asdict(self) -> dict:
+        """
+        Convert the Speaker object to a dictionary.
+
+        Returns:
+            Dictionary representation of the Speaker
+        """
         return asdict(self)
 
 
@@ -55,7 +77,15 @@ class ConvoTurn:
 
     def to_segment(self) -> Segment:
         """
-        Convert this conversation turn to a CSM Segment for use as context
+        Convert this conversation turn to a CSM Segment for use as context.
+
+        Loads audio from file if not already in memory.
+
+        Returns:
+            A Segment object containing speaker ID, text, and audio
+
+        Raises:
+            ValueError: If neither audio nor audio_path is available
         """
         audio = self.audio
         if audio is None and self.audio_path:
@@ -73,11 +103,32 @@ class TextOptions:
     temperature: float = 0.8
 
     def asdict(self, **kwargs) -> dict:
+        """
+        Convert the TextOptions to a dictionary with optional additional parameters.
+
+        Args:
+            **kwargs: Additional key-value pairs to include in the output dictionary
+
+        Returns:
+            Dictionary representation of TextOptions merged with additional parameters
+        """
         return asdict(self) | kwargs
 
     # some of the ollama options are different that the openai options, i know ill have to deal with both of these later
     def oai_fmt(self):
+        """
+        Format options for OpenAI-compatible APIs.
+
+        Returns:
+            TextOptions formatted for OpenAI API
+        """
         return self
 
     def ollama_fmt(self):
+        """
+        Format options for Ollama API.
+
+        Returns:
+            TextOptions formatted for Ollama API
+        """
         return self

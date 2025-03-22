@@ -41,6 +41,14 @@ _Providers = {}
 
 
 def add_provider(name: str, use_dc: bool = True):
+    """
+    Decorator to register a provider class in the _Providers registry.
+
+    Args:
+        name: Name to register the provider under
+        use_dc: Whether to wrap the class in @dataclass
+    """
+
     def wrapper(func):  # move dataclass to this for slightly clearer code
         _Providers[name] = dataclass(func) if use_dc else func
         return func
@@ -49,6 +57,15 @@ def add_provider(name: str, use_dc: bool = True):
 
 
 def ProvidersSetup(configs: dict[str, dict]):
+    """
+    Initialize provider instances from a config dictionary.
+
+    Args:
+        configs: Dictionary mapping provider names to their config dicts
+
+    Returns:
+        List of initialized provider instances
+    """
     return [_Providers[key](**config) for key, config in configs.items()]
 
 
@@ -65,6 +82,7 @@ class TextProvider:
     model_name: str = "gemma3:latest"
 
     def _from_resp(self, resp: httpx.Response) -> dict:
+        """Parse and validate response from API"""
         resp.raise_for_status()
         return resp.json()
 
@@ -74,7 +92,17 @@ class TextProvider:
     async def chat_oai(
         self, messages: MessageType, model_options: TextOptions | dict = {}, **kwargs
     ) -> str:
-        """Generate text using OpenAI API endpoint"""
+        """
+        Generate text using OpenAI API endpoint.
+
+        Args:
+            messages: List of message dicts to send to the API
+            model_options: TextOptions instance or dict of model parameters
+            **kwargs: Additional args to pass to model_options.asdict()
+
+        Returns:
+            Generated text response
+        """
         if isinstance(model_options, TextOptions):
             model_options = model_options.asdict(**kwargs)
 
@@ -100,7 +128,15 @@ class TextProvider:
         """
         Generate a chat completion response using Ollama's API.
 
-        The reason we may prefer this over the openai endpoint is there is variability in the tool use
+        Args:
+            messages: List of message dicts to send to the API
+            stream: Whether to stream the response
+            tools: Optional list of tools to make available
+            model_options: TextOptions instance or dict of model parameters
+            **kwargs: Additional args to pass to model_options.asdict()
+
+        Returns:
+            Response data from the Ollama API
         """
 
         if isinstance(model_options, TextOptions):
@@ -146,7 +182,7 @@ class AudioProvider:
         Args:
             text: The text to convert to speech
             speaker_id: Speaker ID for the CSM model (0, 1, etc.)
-            context_turns: Optional list of previous ConvoTurn objects with audio
+            context: Optional list of previous segments for context
             max_audio_length_ms: Maximum audio length in milliseconds
 
         Returns:
@@ -162,7 +198,13 @@ class AudioProvider:
         return audio
 
     def save_audio(self, audio: torch.Tensor, file_path: str):
-        """Save the generated audio to a file."""
+        """
+        Save the generated audio to a file.
+
+        Args:
+            audio: Audio tensor to save
+            file_path: Path to save the audio file to
+        """
         torchaudio.save(file_path, audio.unsqueeze(0).cpu(), self.sample_rate)
 
 
@@ -222,19 +264,29 @@ class ConvoManager:
 
     def _clean_generated_text(self, text: str, speaker: Speaker) -> str:
         """
-        Remove the speaker name from the text if it's at the beginning of the text
+        Remove the speaker name from the text if it's at the beginning of the text.
 
-        This isn't necessary given I changed the prompt formatting, but if switching prompts,
-        should have a way to clean the model text to be more consistent.
-        Removes {speaker.name}: or {speaker.name}\n from the beginning of the text
+        Args:
+            text: Text to clean
+            speaker: Speaker whose name to remove
 
+        Returns:
+            Cleaned text with speaker name removed if present
         """
         text = re.sub(f"^{speaker.name}[:|\n]\\s*", "", text).strip()
         return text
 
     def _post_turn(self, turn: ConvoTurn, save_audio: bool) -> ConvoTurn:
-        """Save the audio for the turn if the audio provider is set and the audio output dir is set"""
+        """
+        Process a turn after generation - save audio if needed and update context.
 
+        Args:
+            turn: The turn to process
+            save_audio: Whether to save the audio to disk
+
+        Returns:
+            The processed turn
+        """
         if save_audio and self.audio_provider and self.audio_output_dir and turn.audio != None:
             audio_filename = f"turn_{len(self.history)}_speaker_{turn.speaker.speaker_id}.wav"
             turn.audio_path = f"{self.audio_output_dir}/{audio_filename}"
@@ -246,6 +298,15 @@ class ConvoManager:
         return turn
 
     async def _create_shorter_text(self, text: str) -> str:
+        """
+        Create a shorter version of the given text while preserving meaning.
+
+        Args:
+            text: Text to shorten
+
+        Returns:
+            Shortened version of the text
+        """
         messages = make_messages(shorter_system_prompt, text)
         return await self.text_provider.chat_oai(messages=messages, model_options=self.text_options)
 
@@ -254,9 +315,14 @@ class ConvoManager:
     ) -> list[Speaker]:
         """
         Generate a list of speakers for the conversation.
-        Allows you to pass in speakers and generate more, also generates a system prompt if none is used
-        """
 
+        Args:
+            n_speakers: Number of speakers to generate
+            speakers: Optional list of pre-defined speakers
+
+        Returns:
+            List of speakers for the conversation
+        """
         n_speakers = n_speakers or self.n_speakers
         speakers = speakers or []
 
@@ -279,9 +345,13 @@ class ConvoManager:
     def select_next_speaker(self, speaker: Speaker | None = None) -> Speaker:
         """
         Select the next speaker for the conversation.
-        Picks a random speaker if no speaker is provided, or if the speaker is not in the history
-        """
 
+        Args:
+            speaker: Optional speaker to force as next speaker
+
+        Returns:
+            Selected speaker for next turn
+        """
         if speaker:
             return speaker
 
@@ -374,11 +444,12 @@ class ConvoManager:
         Yields each turn immediately after it's generated for real-time processing.
 
         Args:
-            num_turns: Number of turns to generate
+            num_turns: Number of turns to generate, -1 for infinite
             initial_text: Optional text to start the conversation with
             initial_speaker: Optional speaker for the initial phrase
             do_audio_generate: Whether to generate audio for each turn
             save_audio: Whether to save the audio for each turn
+            max_audio_length_ms: Maximum audio length in milliseconds
 
         Yields:
             ConvoTurn objects one at a time as they are generated
