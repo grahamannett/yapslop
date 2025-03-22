@@ -5,6 +5,7 @@ import asyncio
 
 from yapslop.yap import ConvoManager, HTTPConfig, ProvidersSetup
 from yapslop.yap_common import initial_speakers
+from yapslop.audio_helpers import save_combined_audio
 
 _line_sep = "-" * 50
 
@@ -21,6 +22,7 @@ async def demo(
     num_turns: int = 5,
     initial_text: str = "Did you hear about that new conversational AI model that just came out?",
     audio_output_dir: str = "audio_output",
+    combined_audio_file: str = "combined.wav",
     cleanup_audio_dir: bool = True,
     max_audio_length_ms: int = 90_000,
 ):
@@ -48,14 +50,13 @@ async def demo(
 
         await convo_manager.setup_speakers()
 
-        initial_speaker = convo_manager.speakers[0]
-        print("StreamConvo with Speakers", [s.name for s in convo_manager.speakers])
+        print("StreamSpeakers", [s.name for s in convo_manager.speakers])
         print(_line_sep)
 
         async for turn in convo_manager.generate_convo_stream(
             num_turns=num_turns,
             initial_text=initial_text,
-            initial_speaker=initial_speaker,
+            initial_speaker=convo_manager.speakers[0],
             max_audio_length_ms=max_audio_length_ms,
         ):
             print(f">>{turn}")
@@ -64,9 +65,12 @@ async def demo(
 
         print(_line_sep)
 
-    # Save combined audio
-    combined_audio_path = convo_manager.save_combined_audio(output_path="full_conversation.wav")
-    print(f"Combined audio saved to: {combined_audio_path}")
+        save_combined_audio(
+            output_file=combined_audio_file,
+            turns=convo_manager.history,
+            audio_provider=convo_manager.audio_provider,
+        )
+        print(f"Combined audio saved to: {combined_audio_file}")
 
 
 if __name__ == "__main__":
