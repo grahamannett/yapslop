@@ -51,17 +51,17 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 
 
-async def audio_tensor_to_wav_bytes(audio_tensor: torch.Tensor, sample_rate: int) -> bytes:
-    """Convert audio tensor to WAV bytes for streaming"""
-    buffer = io.BytesIO()
-    torchaudio.save(buffer, audio_tensor.unsqueeze(0).cpu(), sample_rate, format="wav")
-    buffer.seek(0)
-    return buffer.read()
-
-
 @app.websocket("/stream")
 async def stream_audio(websocket: WebSocket):
     """Stream generated conversation audio over WebSocket connection."""
+
+    async def audio_tensor_to_wav_bytes(audio_tensor: torch.Tensor, sample_rate: int) -> bytes:
+        """Convert audio tensor to WAV bytes for streaming"""
+        buffer = io.BytesIO()
+        torchaudio.save(buffer, audio_tensor.unsqueeze(0).cpu(), sample_rate, format="wav")
+        buffer.seek(0)
+        return buffer.read()
+
     await websocket.accept()
 
     try:
@@ -71,11 +71,11 @@ async def stream_audio(websocket: WebSocket):
         await websocket.send_text("Starting conversation stream...")
 
         # Start conversation with initial phrase
-        initial_phrase = "Did you hear about that new conversational AI model that just came out?"
+        initial_text = "Did you hear about that new conversational AI model that just came out?"
 
-        async for turn in convo_manager.generate_convo_text_stream(
+        async for turn in convo_manager.generate_convo_stream(
             num_turns=-1,
-            initial_phrase=initial_phrase,
+            initial_text=initial_text,
             initial_speaker=initial_speaker,
             save_audio=False,
         ):

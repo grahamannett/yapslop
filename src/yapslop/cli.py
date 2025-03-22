@@ -17,7 +17,7 @@ def _setup_demo(audio_output_dir: str, cleanup_audio_dir: bool):
 async def demo(
     n_speakers: int = 2,
     num_turns: int = 5,
-    initial_phrase: str = "Did you hear about that new conversational AI model that just came out?",
+    initial_text: str = "Did you hear about that new conversational AI model that just came out?",
     audio_output_dir: str = "audio_output",
     cleanup_audio_dir: bool = True,
     max_audio_length_ms: int = 300_000,
@@ -50,9 +50,9 @@ async def demo(
 
         print("Streaming conversation in real-time\n" + "-" * 50)
         # Stream each turn as it's generated
-        async for turn in convo_manager.generate_convo_text_stream(
+        async for turn in convo_manager.generate_convo_stream(
             num_turns=num_turns,
-            initial_phrase=initial_phrase,
+            initial_text=initial_text,
             initial_speaker=initial_speaker,
             max_audio_length_ms=max_audio_length_ms,
         ):

@@ -54,3 +54,4 @@ logs/
 uv.lock
 
 .cursor/rules
+examples/mp/

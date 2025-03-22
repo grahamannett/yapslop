@@ -173,15 +173,13 @@ class ConvoManager:
     Manages a simulated conversation between multiple speakers using a language model.
     """
 
-    system_prompt: str
-
     def __init__(
         self,
         text_provider: TextProvider,
         audio_provider: AudioProvider | None = None,
         n_speakers: int = 2,
         speakers: list[Speaker] = [],
-        system_prompt: str | None = None,
+        system_prompt: str = "",
         max_tokens: int = 300,
         temperature: float = 0.7,
         audio_output_dir: str | None = None,
@@ -284,11 +282,15 @@ class ConvoManager:
         self.system_prompt = self.system_prompt or make_convo_system_prompt(speakers)
         return speakers
 
-    def select_next_speaker(self) -> Speaker:
+    def select_next_speaker(self, speaker: Speaker | None = None) -> Speaker:
         """
         Select the next speaker for the conversation.
         By default, rotates through speakers in order, avoiding consecutive turns.
         """
+
+        if speaker:
+            return speaker
+
         if not self.history:
             return random.choice(self.speakers)
 
@@ -349,10 +351,10 @@ class ConvoManager:
 
         return turn
 
-    async def generate_convo_text_stream(
+    async def generate_convo_stream(
         self,
         num_turns: int,
-        initial_phrase: str | None = None,
+        initial_text: str | None = None,
         initial_speaker: Speaker | None = None,
         do_audio_generate: bool = True,
         save_audio: bool = True,
@@ -364,7 +366,7 @@ class ConvoManager:
 
         Args:
             num_turns: Number of turns to generate
-            initial_phrase: Optional text to start the conversation with
+            initial_text: Optional text to start the conversation with
             initial_speaker: Optional speaker for the initial phrase
             do_audio_generate: Whether to generate audio for each turn
             save_audio: Whether to save the audio for each turn
@@ -372,27 +374,25 @@ class ConvoManager:
         Yields:
             ConvoTurn objects one at a time as they are generated
         """
-        # Add initial phrase if provided
-        if initial_phrase:
-            speaker = initial_speaker or self.select_next_speaker()
+        # allow for the initial text and speaker to be passed in
+        if initial_text:
+            text = initial_text
+            speaker = initial_speaker
+
+        while num_turns != 0:
+            speaker = self.select_next_speaker(speaker=speaker)
             turn = await self.generate_turn(
-                text=initial_phrase,
+                text=text,
                 speaker=speaker,
                 save_audio=save_audio,
                 do_audio_generate=do_audio_generate,
                 max_audio_length_ms=max_audio_length_ms,
             )
             yield turn
-
-        while num_turns != 0:
-            turn = await self.generate_turn(
-                speaker=self.select_next_speaker(),
-                do_audio_generate=do_audio_generate,
-                save_audio=save_audio,
-                max_audio_length_ms=max_audio_length_ms,
-            )
-            yield turn
+            # reset the phrase and speaker if passed in for next turn
             num_turns -= 1
+            speaker = None
+            text = None
 
     def save_combined_audio(
         self,
