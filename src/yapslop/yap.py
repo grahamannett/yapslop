@@ -13,18 +13,18 @@ from yapslop.convo_helpers import MessageType, generate_speaker_dict
 from yapslop.generator import load_csm_1b, Segment
 
 DEVICE: Literal["cuda", "cpu"] = "cuda" if torch.cuda.is_available() else "cpu"
-system_prompt_template = """
-You are simulating a conversation between the following characters:
+simulator_system_prompt = """You are simulating a conversation between the following characters:
 {speakers_desc}
 
 Follow these rules:
 1. Respond ONLY as the designated speaker for each turn
-2. Stay in character at all times
-3. Keep responses concise and natural-sounding
+2. Stay in character at all times and don't refer to yourself in the third person
+3. Keep responses concise (similar in length to the prior response length) and natural-sounding
 4. Don't narrate actions or use quotation marks
-5. Don't refer to yourself in the third person
-6. Keep the response length similar to the other responses.
 """
+
+shorter_system_prompt = """Create a shorter version of the following text.
+Keep the same meaning and return ONLY the text in a more concise form"""
 
 # using _Providers as a registry, can store the type of provider, or use like "ollama" in future
 # avoid using too deep a structure for all of this as will make future threading/multiprocessing easier
@@ -53,7 +53,7 @@ def make_convo_system_prompt(speakers: list[Speaker]) -> str:
         return prompt
 
     speakers_desc = "\n\n".join(format_speaker(speaker) for speaker in speakers)
-    return system_prompt_template.format(speakers_desc=speakers_desc)
+    return simulator_system_prompt.format(speakers_desc=speakers_desc)
 
 
 @dataclass
@@ -71,6 +71,9 @@ class TextProvider:
     def _from_resp(self, resp: httpx.Response) -> dict:
         resp.raise_for_status()
         return resp.json()
+
+    async def __call__(self, *args, **kwargs):
+        return await self.chat_oai(*args, **kwargs)
 
     async def chat_oai(
         self, messages: MessageType, model_options: TextOptions | dict = {}, **kwargs
@@ -232,7 +235,14 @@ class ConvoManager:
             self.audio_provider.save_audio(turn.audio, turn.audio_path)
         return turn
 
-    def _create_prompt_for_next_turn(
+    async def _create_shorter_text(self, text: str) -> str:
+        msg = [
+            {"role": "system", "content": shorter_system_prompt},
+            {"role": "user", "content": text},
+        ]
+        return await self.text_provider.chat_oai(messages=msg, model_options=self.text_options)
+
+    def _create_msgs_for_next_turn(
         self, next_speaker: Speaker | None = None
     ) -> list[dict[str, str]]:
         """
@@ -245,20 +255,14 @@ class ConvoManager:
             List of message dictionaries for the API call
         """
 
-        system_prompt = self.system_prompt
-
         if self.history:
             prev_convo = "\n".join([str(turn) for turn in self.history])
-            system_prompt = f"{system_prompt}\n\nPrevious Conversation:\n{prev_convo}"
+            system_prompt = f"{self.system_prompt}\nPrevious Conversation:\n{prev_convo}"
 
         msgs = [{"role": "system", "content": system_prompt}]
+
         if next_speaker:
-            msgs.append(
-                {
-                    "role": "user",
-                    "content": f"{next_speaker.name}:",
-                }
-            )
+            msgs += [{"role": "user", "content": f"{next_speaker.name}:"}]
 
         return msgs
 
@@ -332,7 +336,7 @@ class ConvoManager:
         turn = ConvoTurn(speaker=speaker)
 
         if text is None:
-            msgs = self._create_prompt_for_next_turn(speaker)
+            msgs = self._create_msgs_for_next_turn(speaker)
             text = await self.text_provider.chat_oai(messages=msgs, model_options=self.text_options)
             text = self._cleanup_text_turn(text=text, speaker=speaker)
 
@@ -350,7 +354,7 @@ class ConvoManager:
                 )
             except Exception:
                 print(f"Error generating text: {turn.text}, shortening text")
-                turn.text = turn.text[:-30]
+                turn.text = await self._create_shorter_text(turn.text)
                 audio = self.audio_provider.generate_audio(
                     text=turn.text,
                     speaker_id=turn.speaker.speaker_id,
