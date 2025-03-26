@@ -4,17 +4,17 @@ import re
 from collections import deque
 from dataclasses import dataclass
 from itertools import count
-from typing import AsyncGenerator, Iterable, Literal
+from typing import AsyncGenerator, Iterable
 
 import httpx
 import torch
 import torchaudio
 
+from yapslop.audio_helpers import load_audio
 from yapslop.convo_dto import ConvoTurn, Speaker, TextOptions
 from yapslop.convo_helpers import MessageType, generate_speaker, make_messages
 from yapslop.generator import Segment, load_csm_1b
-
-DEVICE: Literal["cuda", "cpu"] = "cuda" if torch.cuda.is_available() else "cpu"
+from yapslop.yap_common import DEVICE
 
 # --- prompts
 # - simulator_system_prompt: the system prompt for the simulator
@@ -69,6 +69,28 @@ def ProvidersSetup(configs: dict[str, dict]):
     return [_Providers[key](**config) for key, config in configs.items()]
 
 
+def turn_to_segment(turn: ConvoTurn) -> Segment:
+    """
+    Convert this conversation turn to a CSM Segment for use as context.
+
+    Loads audio from file if not already in memory.
+
+    Returns:
+        A Segment object containing speaker ID, text, and audio
+
+    Raises:
+        ValueError: If neither audio nor audio_path is available
+    """
+    audio = turn.audio
+    if audio is None and turn.audio_path:
+        audio = load_audio(turn.audio_path)
+
+    if (audio is None) and (turn.audio_path is None):
+        raise ValueError("Cannot convert to CSM Segment without audio")
+
+    return Segment(speaker=turn.speaker.speaker_id, text=turn.text, audio=audio)
+
+
 @dataclass
 class HTTPConfig:
     base_url: str = "http://localhost:11434"
@@ -89,9 +111,7 @@ class TextProvider:
     async def __call__(self, *args, **kwargs):
         return await self.chat_oai(*args, **kwargs)
 
-    async def chat_oai(
-        self, messages: MessageType, model_options: TextOptions | dict = {}, **kwargs
-    ) -> str:
+    async def chat_oai(self, messages: MessageType, model_options: TextOptions | dict = {}, **kwargs) -> str:
         """
         Generate text using OpenAI API endpoint.
 
@@ -225,8 +245,7 @@ class ConvoManager:
         max_tokens: int = 300,
         temperature: float = 0.7,
         audio_output_dir: str | None = None,
-        limit_context_turns: int
-        | None = 3,  # limit either the text length or the audio context length
+        limit_context_turns: int | None = 3,  # limit either the text length or the audio context length
     ):
         """
         Initialize the conversation manager.
@@ -293,7 +312,7 @@ class ConvoManager:
             self.audio_provider.save_audio(turn.audio, turn.audio_path)
 
         if turn.audio is not None:
-            self.context_queue.append(turn.to_segment())
+            self.context_queue.append(turn_to_segment(turn))
 
         return turn
 

@@ -1,9 +1,13 @@
+from typing import Generator as GeneratorType
+
 import torch
 import torchaudio
+
+from yapslop.convo_dto import Segment
+
 from csm.generator import (
     CSM_1B_GH_WATERMARK,
     Model,
-    Segment,
     hf_hub_download,
     load_llama3_tokenizer,
     load_watermarker,
@@ -35,6 +39,14 @@ class Generator(CSMGenerator):
 
         self.sample_rate = mimi.sample_rate
         self.device = device
+
+    def watermark(self, audio: torch.Tensor) -> torch.Tensor:
+        # This applies an imperceptible watermark to identify audio as AI-generated.
+        # Watermarking ensures transparency, dissuades misuse, and enables traceability.
+        # Please be a responsible AI citizen and keep the watermarking in place.
+        # If using CSM 1B in another application, use your own private key and keep it secret.
+        audio, wm_sample_rate = watermark(self._watermarker, audio, self.sample_rate, CSM_1B_GH_WATERMARK)
+        return torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=self.sample_rate)
 
     @torch.inference_mode()
     def generate(
@@ -68,7 +80,7 @@ class Generator(CSMGenerator):
         curr_pos = torch.arange(0, prompt_tokens.size(0)).unsqueeze(0).long().to(self.device)
 
         # max_seq_len = 2048 - max_audio_frames # had tried with flipped but idk
-        max_seq_len = max_audio_frames # if its less than 163_840 this will be <0?
+        max_seq_len = max_audio_frames  # if its less than 163_840 this will be <0?
         if curr_tokens.size(1) >= max_seq_len:
             raise ValueError(f"Inputs too long, must be below max_seq_len - max_audio_frames: {max_seq_len}")
 
@@ -87,15 +99,37 @@ class Generator(CSMGenerator):
 
         audio = self._audio_tokenizer.decode(torch.stack(samples).permute(1, 2, 0)).squeeze(0).squeeze(0)
 
-        # This applies an imperceptible watermark to identify audio as AI-generated.
-        # Watermarking ensures transparency, dissuades misuse, and enables traceability.
-        # Please be a responsible AI citizen and keep the watermarking in place.
-        # If using CSM 1B in another application, use your own private key and keep it secret.
-        if self._watermarker:
-            audio, wm_sample_rate = watermark(self._watermarker, audio, self.sample_rate, CSM_1B_GH_WATERMARK)
-            audio = torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=self.sample_rate)
+        if self.use_wm:
+            audio = self.watermark(audio)
 
         return audio
+
+    @torch.inference_mode()
+    def stream_generate(
+        self,
+        text: str,
+        speaker: int,
+        context: list[Segment],
+        max_audio_length_ms: float = 90_000,
+        temperature: float = 0.9,
+        topk: int = 50,
+        chunk_size: int = 1000,  # Size of audio chunks to yield in milliseconds
+    ) -> GeneratorType[torch.Tensor, None, None]:
+        """Stream audio generation, yielding chunks as they're generated.
+
+        Args:
+            text: Text to generate audio for
+            speaker: Speaker ID
+            context: List of previous conversation segments
+            max_audio_length_ms: Maximum length of audio to generate
+            temperature: Sampling temperature
+            topk: Top-k sampling parameter
+            chunk_size: Size of audio chunks to yield in milliseconds
+
+        Yields:
+            torch.Tensor: Audio chunks of size chunk_size
+        """
+        pass
 
 
 def load_csm_1b(device: str = "cuda") -> Generator:

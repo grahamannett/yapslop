@@ -62,9 +62,7 @@ def get_conversation_as_string(history: list[ConvoTurn]) -> str:  # type: ignore
     return "\n".join([str(turn) for turn in history])
 
 
-async def generate_speaker(
-    chat_func: Callable[..., Any], speakers: list[Speaker] | None = None
-) -> Speaker:
+async def generate_speaker(chat_func: Callable[..., Any], speakers: list[Speaker] | None = None) -> Speaker:
     """
     Generate a new speaker character using a language model.
 

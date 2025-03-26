@@ -1,8 +1,9 @@
 import httpx
 import pytest
 
-from yapslop.convo_helpers import generate_speaker_kwargs
+from yapslop.convo_helpers import generate_speaker
 from yapslop.yap import Speaker, TextProvider, ConvoManager
+from yapslop.yap_common import initial_speakers
 
 pytestmark = pytest.mark.anyio
 
@@ -44,11 +45,22 @@ async def text_provider(ollama_params: dict):
         yield TextProvider(client, **ollama_params)
 
 
+def test_initial_speakers() -> None:
+    assert isinstance(initial_speakers[0], dict)
+    assert "name" in initial_speakers[0] and "description" in initial_speakers[0]
+
+    speakers = [Speaker(**s) for s in initial_speakers]
+
+    assert isinstance(speakers[0], Speaker)
+    assert speakers[0].name == initial_speakers[0]["name"]
+    assert speakers[0].description == initial_speakers[0]["description"]
+
+
 async def test_generate_speaker(text_provider: TextProvider):
     """
     Test that the generate_speaker_kwargs function can generate a speaker dictionary
     """
-    speaker_dict = await generate_speaker_kwargs(text_provider)
+    speaker_dict = await generate_speaker(text_provider)
 
     assert "name" in speaker_dict and "description" in speaker_dict
 

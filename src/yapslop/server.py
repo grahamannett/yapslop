@@ -19,11 +19,13 @@ from yapslop.yap import (
 from yapslop.convo_dto import Speaker
 from yapslop.yap_common import initial_speakers
 
-STATIC_DIR = Path(__file__).parent / "static"  # avoid mounting static dir unless i add more html/js
+# avoid mounting static dir unless i add more html/js
+STATIC_DIR = Path(__file__).parent / "static"
 
 # Use a typed dictionary to store app state
 app_state: dict[str, Any] = {
     "initial_text": "Did you hear about that new conversational AI model that just came out?",
+    "initial_speakers": [Speaker(**s) for s in initial_speakers],
 }
 
 
@@ -38,6 +40,7 @@ async def lifespan(app: FastAPI):
     Args:
         app: The FastAPI application instance
     """
+
     async with httpx.AsyncClient(base_url=HTTPConfig.base_url) as client:
         text_provider, audio_provider = ProvidersSetup(
             configs={
@@ -48,7 +51,7 @@ async def lifespan(app: FastAPI):
 
         convo_manager = ConvoManager(
             n_speakers=2,
-            speakers=initial_speakers,
+            speakers=app_state["initial_speakers"],
             text_provider=text_provider,
             audio_provider=audio_provider,
             audio_output_dir="audio_output",
@@ -66,7 +69,7 @@ app = FastAPI(lifespan=lifespan)
 
 
 @app.websocket("/stream")
-async def stream_audio(websocket: WebSocket):
+async def stream_audio(websocket: WebSocket, n_buffer_turns: int = 2):
     """
     Stream generated conversation audio over WebSocket connection.
 
@@ -94,37 +97,23 @@ async def stream_audio(websocket: WebSocket):
         buffer.seek(0)
         return buffer.read()
 
-    def get_initial_text(msg: str) -> str:
-        """
-        Extract the initial conversation prompt from the client message.
-
-        Args:
-            msg: The message from the client, potentially containing an initial prompt
-
-        Returns:
-            The extracted initial text or the default prompt
-        """
-        if msg.startswith("initial:"):
-            return msg[8:].strip()
-        # Default initial phrase if none is provided by the client
-        return app_state["initial_text"]
-
     await websocket.accept()
 
     try:
+        msg = app_state["initial_text"]
         convo_manager: ConvoManager = app_state["convo_manager"]
         initial_speaker: Speaker = app_state["initial_speaker"]
 
         # Wait for the initial message from the client
-        first_msg = await websocket.receive_text()
-
-        initial_text = get_initial_text(first_msg)
+        if (_msg := await websocket.receive_text()).startswith("initial:"):
+            msg = _msg[8:].strip()
 
         await websocket.send_text("Starting conversation stream...")
+        await websocket.send_text(f"slopinfo: Generating {n_buffer_turns} buffer turns...")
 
         async for turn in convo_manager.generate_convo_stream(
             num_turns=-1,  # -1 means infinite
-            initial_text=initial_text,
+            initial_text=msg,
             initial_speaker=initial_speaker,
             save_audio=False,
         ):

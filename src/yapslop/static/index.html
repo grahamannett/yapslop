@@ -148,17 +148,22 @@
 
             ws.onmessage = async (event) => {
                 if (typeof event.data === 'string') {
-                    if (event.data.startsWith('speaking:')) {
-                        const [_, speaker, text] = event.data.split(':');
+                    const message = event.data;
+                    if (message.startsWith('speaking:')) {
+                        const [_, speaker, text] = message.split(':');
                         addConversationTurn(speaker, text);
                         updateStatus(`${speaker} is speaking...`);
-                    } else if (event.data.startsWith('error:')) {
-                        updateStatus('Error: ' + event.data.slice(6));
-                    } else if (event.data.startsWith('complete:')) {
+                    } else if (message.startsWith('slopinfo:')) {
+                        const [_, info] = message.split(':');
+                        updateStatus(info);
+                        addConversationTurn("SLOPINFO", info);
+                    } else if (message.startsWith('error:')) {
+                        updateStatus('Error: ' + message.slice(6));
+                    } else if (message.startsWith('complete:')) {
                         updateStatus('Conversation finished!');
                         cleanup();
                     } else {
-                        console.log(event.data);
+                        console.log(message);
                     }
                     return;
                 }

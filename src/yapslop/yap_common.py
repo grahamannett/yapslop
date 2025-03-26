@@ -1,9 +1,13 @@
-from yapslop.convo_dto import Speaker
+from os import getenv
 
+import torch
 
+DEVICE: str = getenv("DEVICE", "cuda" if torch.cuda.is_available() else "cpu")
+
+# using dict to avoid unnecessary imports
 initial_speakers = [
-    Speaker(
-        name="Seraphina",
-        description="Tech entrepreneur. Uses technical jargon, speaks confidently",
-    ),
+    {
+        "name": "Seraphina",
+        "description": "Tech entrepreneur. Uses technical jargon, speaks confidently",
+    },
 ]

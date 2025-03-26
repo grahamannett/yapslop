@@ -2,26 +2,18 @@ from dataclasses import asdict, dataclass, field
 from typing import ClassVar
 
 import torch
-import torchaudio
-
-from yapslop.generator import Segment
 
 
-def load_audio(audio_path: str, new_freq: int = 24_000) -> torch.Tensor:
+@dataclass
+class Segment:
     """
-    Load an audio file and resample it to the specified frequency.
-
-    Args:
-        audio_path: Path to the audio file to load
-        new_freq: Target sample rate to resample to (default: 24kHz)
-
-    Returns:
-        Resampled audio tensor
+    defining Segment here rather than import `csm.generator.Segment` to allow extending for easier caching of segments
     """
-    audio_tensor, sample_rate = torchaudio.load(audio_path)
-    return torchaudio.functional.resample(
-        audio_tensor.squeeze(0), orig_freq=sample_rate, new_freq=new_freq
-    )
+
+    speaker: int
+    text: str
+    # (num_samples,), sample_rate = 24_000
+    audio: torch.Tensor
 
 
 @dataclass
@@ -75,26 +67,26 @@ class ConvoTurn:
     def __str__(self) -> str:
         return f"{self.speaker.name}: {self.text}"
 
-    def to_segment(self) -> Segment:
-        """
-        Convert this conversation turn to a CSM Segment for use as context.
+    # def to_segment(self) -> Segment:
+    #     """
+    #     Convert this conversation turn to a CSM Segment for use as context.
 
-        Loads audio from file if not already in memory.
+    #     Loads audio from file if not already in memory.
 
-        Returns:
-            A Segment object containing speaker ID, text, and audio
+    #     Returns:
+    #         A Segment object containing speaker ID, text, and audio
 
-        Raises:
-            ValueError: If neither audio nor audio_path is available
-        """
-        audio = self.audio
-        if audio is None and self.audio_path:
-            audio = load_audio(self.audio_path)
+    #     Raises:
+    #         ValueError: If neither audio nor audio_path is available
+    #     """
+    #     audio = self.audio
+    #     if audio is None and self.audio_path:
+    #         audio = load_audio(self.audio_path)
 
-        if (audio is None) and (self.audio_path is None):
-            raise ValueError("Cannot convert to CSM Segment without audio")
+    #     if (audio is None) and (self.audio_path is None):
+    #         raise ValueError("Cannot convert to CSM Segment without audio")
 
-        return Segment(speaker=self.speaker.speaker_id, text=self.text, audio=audio)
+    #     return Segment(speaker=self.speaker.speaker_id, text=self.text, audio=audio)
 
 
 @dataclass

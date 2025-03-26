@@ -5,7 +5,6 @@ import pytest
 import torch
 import torchaudio
 from yapslop.generator import load_csm_1b, Generator
-from huggingface_hub import hf_hub_download
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -69,3 +68,14 @@ def test_audio_generation(audio_output_file: str, text_prompt: str):
     assert sample_rate == generator.sample_rate
     assert waveform.shape[0] == 1
     assert waveform.shape[1] > 0
+
+
+@pytest.mark.parametrize("text_prompt", ["We are streaming from yapslop", "This is a streamed "])
+def test_stream_audio_generation(text_prompt: str) -> None:
+    """
+    Test streaming audio generation with different text prompts using CSM model.
+
+    This test:
+
+    """
+    pass
