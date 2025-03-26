@@ -11,13 +11,10 @@ import torchaudio
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse
 
-from yapslop.yap import (
-    ConvoManager,
-    HTTPConfig,
-    ProvidersSetup,
-)
 from yapslop.convo_dto import Speaker
+from yapslop.yap import ConvoManager, HTTPConfig
 from yapslop.yap_common import initial_speakers
+from yapslop.yaproviders import ProvidersSetup
 
 # avoid mounting static dir unless i add more html/js
 STATIC_DIR = Path(__file__).parent / "static"
@@ -25,7 +22,6 @@ STATIC_DIR = Path(__file__).parent / "static"
 # Use a typed dictionary to store app state
 app_state: dict[str, Any] = {
     "initial_text": "Did you hear about that new conversational AI model that just came out?",
-    "initial_speakers": [Speaker(**s) for s in initial_speakers],
 }
 
 
@@ -51,7 +47,7 @@ async def lifespan(app: FastAPI):
 
         convo_manager = ConvoManager(
             n_speakers=2,
-            speakers=app_state["initial_speakers"],
+            speakers=initial_speakers,
             text_provider=text_provider,
             audio_provider=audio_provider,
             audio_output_dir="audio_output",

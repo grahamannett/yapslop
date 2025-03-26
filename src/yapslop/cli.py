@@ -3,7 +3,8 @@ from pathlib import Path
 import httpx
 import asyncio
 
-from yapslop.yap import ConvoManager, HTTPConfig, ProvidersSetup
+from yapslop.yap import ConvoManager, HTTPConfig
+from yapslop.yaproviders import ProvidersSetup
 from yapslop.yap_common import initial_speakers
 from yapslop.audio_helpers import save_combined_audio
 

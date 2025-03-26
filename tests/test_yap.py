@@ -2,32 +2,41 @@ import httpx
 import pytest
 
 from yapslop.convo_helpers import generate_speaker
-from yapslop.yap import Speaker, TextProvider, ConvoManager
+from yapslop.yap import ConvoManager, Speaker, TextProvider
 from yapslop.yap_common import initial_speakers
 
 pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture
-def speakers():
+def speakers_dict():
     """
-    Speakers for the conversation.
+    Dictionary of speakers for the conversation.
     Use this fixture to avoid having to create them and avoiding doing a mock of the speaker response
     """
     return [
-        Speaker(
-            name="Alice",
-            description="Tech entrepreneur. Uses technical jargon, speaks confidently",
-        ),
-        Speaker(
-            name="Bob",
-            description="Philosophy professor. Speaks in questions, uses metaphors",
-        ),
-        Speaker(
-            name="Charlie",
-            description="Stand-up comedian. Uses humor, makes pop culture references",
-        ),
+        {
+            "name": "Alice",
+            "description": "Tech entrepreneur. Uses technical jargon, speaks confidently",
+        },
+        {
+            "name": "Bob",
+            "description": "Philosophy professor. Speaks in questions, uses metaphors",
+        },
+        {
+            "name": "Charlie",
+            "description": "Stand-up comedian. Uses humor, makes pop culture references",
+        },
     ]
+
+
+@pytest.fixture
+def speakers(speakers_dict):
+    """
+    Speaker objects for the conversation.
+    Created from the speakers_dict fixture.
+    """
+    return Speaker.from_data(speakers_dict)
 
 
 @pytest.fixture
@@ -45,11 +54,20 @@ async def text_provider(ollama_params: dict):
         yield TextProvider(client, **ollama_params)
 
 
+def test_speakers_from_dict(speakers_dict: list[dict]) -> None:
+    speakers = Speaker.from_data(speakers_dict)
+
+    assert len(speakers) == len(speakers_dict)
+    for speaker, speaker_dict in zip(speakers, speakers_dict):
+        assert speaker.name == speaker_dict["name"]
+        assert speaker.description == speaker_dict["description"]
+
+
 def test_initial_speakers() -> None:
     assert isinstance(initial_speakers[0], dict)
     assert "name" in initial_speakers[0] and "description" in initial_speakers[0]
 
-    speakers = [Speaker(**s) for s in initial_speakers]
+    speakers = Speaker.from_data(initial_speakers)
 
     assert isinstance(speakers[0], Speaker)
     assert speakers[0].name == initial_speakers[0]["name"]
