@@ -1,5 +1,9 @@
 # YapSlop
 
+Until there is a demo video, here is a screenshot of the demo (but imagine from CSM-1B streaming at the same time...):
+![Imagine audio streaming at the same time...](./docs/demo.png)
+
+
 ## The slop must flow.
 
 Generate a continuous stream of conversational audio using CSM 1B model: [CSM](https://github.com/SesameAILabs/csm) and another model (via ollama).
