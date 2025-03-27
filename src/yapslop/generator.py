@@ -1,7 +1,9 @@
+from functools import cache
 from typing import Generator as GeneratorType
 
 import torch
 import torchaudio
+import time
 
 from yapslop.convo_dto import Segment
 
@@ -48,6 +50,10 @@ class Generator(CSMGenerator):
         audio, wm_sample_rate = watermark(self._watermarker, audio, self.sample_rate, CSM_1B_GH_WATERMARK)
         return torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=self.sample_rate)
 
+    @cache
+    def _tokenize_segment(self, segment: Segment) -> tuple[torch.Tensor, torch.Tensor]:
+        return super()._tokenize_segment(segment)
+
     @torch.inference_mode()
     def generate(
         self,
@@ -62,6 +68,7 @@ class Generator(CSMGenerator):
 
         max_audio_frames = int(max_audio_length_ms / 80)
         tokens, tokens_mask = [], []
+
         for segment in context:
             segment_tokens, segment_tokens_mask = self._tokenize_segment(segment)
             tokens.append(segment_tokens)

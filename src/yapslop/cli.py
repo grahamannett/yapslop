@@ -1,5 +1,5 @@
 from pathlib import Path
-
+import argparse
 import httpx
 import asyncio
 
@@ -33,6 +33,8 @@ async def demo(
     combined_audio_file: str = "combined.wav",
     cleanup_audio_dir: bool = True,
     max_audio_length_ms: int = 90_000,
+    model_name: str = "gemma3:latest",
+    **kwargs,
 ):
     """
     Demonstrate a multi-speaker conversation with audio generation.
@@ -49,6 +51,7 @@ async def demo(
         combined_audio_file: Filename for the combined audio of all turns
         cleanup_audio_dir: If True, cleans up existing audio files before starting
         max_audio_length_ms: Maximum length of generated audio in milliseconds
+        model_name: Model name to use for text generation
     """
 
     _setup_demo(audio_output_dir, cleanup_audio_dir)
@@ -56,7 +59,7 @@ async def demo(
     async with httpx.AsyncClient(base_url=HTTPConfig.base_url) as client:
         text_provider, audio_provider = ProvidersSetup(
             configs={
-                "text": {"client": client},
+                "text": {"client": client, "model_name": model_name},
                 "audio": {},
             }
         )
@@ -94,5 +97,28 @@ async def demo(
         print(f"Combined audio saved to: {combined_audio_file}")
 
 
+def parse_args():
+    """Parse command line arguments for the demo."""
+    parser = argparse.ArgumentParser(description="Run a demonstration of the conversation system with audio output.")
+    parser.add_argument("--num-turns", type=int, default=5, help="Number of conversation turns to generate")
+    parser.add_argument("--model-name", default="gemma3:latest", help="Model name to use for text generation")
+    parser.add_argument("--n-speakers", type=int, default=3, help="Number of speakers in the conversation")
+    parser.add_argument("--audio-output-dir", default="audio_output", help="Directory to save audio files")
+    parser.add_argument("--combined-audio-file", default="combined_audio.wav", help="Filename for combined audio")
+    parser.add_argument(
+        "--cleanup-audio-dir", action="store_true", help="Clean up existing audio files before starting"
+    )
+    parser.add_argument(
+        "--max-audio-length-ms", type=int, default=90_000, help="Maximum length of generated audio in milliseconds"
+    )
+    parser.add_argument(
+        "--initial-text",
+        default="Did you hear about that new conversational AI model that just came out?",
+        help="Initial text to start the conversation",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    asyncio.run(demo())
+    args = parse_args()
+    asyncio.run(demo(**vars(args)))

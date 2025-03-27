@@ -48,6 +48,9 @@ class Segment:
     # (num_samples,), sample_rate = 24_000
     audio: torch.Tensor
 
+    def __hash__(self) -> int:
+        return hash((self.speaker, self.text))
+
 
 class _SID:
     _next_id: ClassVar[int] = 0
