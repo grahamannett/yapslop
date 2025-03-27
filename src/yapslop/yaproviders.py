@@ -56,7 +56,7 @@ class TextProvider:
         resp.raise_for_status()
         return resp.json()
 
-    async def __call__(self, *args, **kwargs):
+    async def __call__(self, *args, **kwargs) -> str | dict:
         return await self.chat_oai(*args, **kwargs)
 
     async def chat_oai(self, messages: MessageType, model_options: TextOptions | dict = {}, **kwargs) -> str:

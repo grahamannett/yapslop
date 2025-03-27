@@ -1,18 +1,35 @@
 import json
 import re
+
+from functools import cache, partial
 from typing import Sequence, TypeAlias, Callable, Any
 from yapslop.convo_dto import ConvoTurn, Speaker
+from yapslop.utils.autils import allow_retry
 
 MessageType: TypeAlias = list[dict[str, str]]
 
-gen_speaker_system_prompt = """You are part of an AI system that helps to create characters for a conversation simulation.
-Output ONLY the JSON object and do not include additional information or text."""
+
+gen_speaker_system_prompt = (
+    "You are part of an AI system that helps to create characters for a conversation simulation."
+)
+
+gen_speaker_example = """
+An example is:
+```json
+{
+    "name": "Bob",
+    "description": "Tech entrepreneur who speaks in technical jargon, speaks confidently"
+}
+```"""
 
 gen_speaker_prompt = """{speaker_names}
 Generate a character that has the following properties:
 - name: The first name of the character.
 - description: Description of the character containing the description of the character and speaking style
-e.g. 'Tech entrepreneur who speaks in technical jargon, speaks confidently'
+
+{gen_speaker_example}
+
+Output ONLY the JSON object and do not include additional information or text.
 """
 
 
@@ -29,6 +46,7 @@ def _msg_role(i: int) -> str:
     return "user" if i % 2 == 0 else "assistant"
 
 
+@cache
 def make_messages(*msgs: Sequence[str] | str, system: str | None = None) -> MessageType:
     """
     Create a list of message dictionaries for chat API input.
@@ -62,37 +80,12 @@ def get_conversation_as_string(history: list[ConvoTurn]) -> str:  # type: ignore
     return "\n".join([str(turn) for turn in history])
 
 
-async def generate_speaker(chat_func: Callable[..., Any], speakers: list[Speaker] | None = None) -> Speaker:
-    """
-    Generate a new speaker character using a language model.
-
-    Args:
-        chat_func: Async function that interfaces with the language model
-        speakers: Optional list of existing speakers to avoid duplication
-
-    Returns:
-        A Speaker object with generated name and description
-
-    Raises:
-        ValueError: If speaker generation or JSON parsing fails
-    """
-    speakers = speakers or []
-
-    speaker_names = f"Speakers so far: {', '.join(s.name for s in speakers)}" if speakers else ""
-
-    prompt = gen_speaker_prompt.format(speaker_names=speaker_names)
-    messages = make_messages(prompt, system=gen_speaker_system_prompt)
-
-    try:
-        response = await chat_func(messages=messages, stream=False)
-        return Speaker(**parse_json_content(response))
-    except Exception as e:
-        raise ValueError(f"Failed to generate speaker: {e}") from e
-
-
 def parse_json_content(content: str | dict) -> dict:
     """
     Parse JSON content from model response, handling various formats.
+
+    While using tool calling would be better, not all the models support it and seems like some of the models I am using are very
+    inconsistent with format, e.g. using `“` instead of `"' or not surrounding field with `"`
 
     Args:
         content: Raw response from model as string or dict
@@ -111,6 +104,10 @@ def parse_json_content(content: str | dict) -> dict:
     if not isinstance(content, str):
         raise ValueError(f"Expected string content, got {type(content)}: {content}")
 
+    # if parsing json explicitly, remove thinking tags, should keep this info if not just generating characters
+    if all(x in content for x in ["<think>", "</think>"]):
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+
     # check if the content has a ```json block which we should extract
     if "```" in content:
         match = re.search(r"```(?:json)?\n(.*?)\n```", content, re.DOTALL)
@@ -118,5 +115,56 @@ def parse_json_content(content: str | dict) -> dict:
 
     try:
         return json.loads(content)  # type: ignore
-    except json.JSONDecodeError:
-        raise json.JSONDecodeError("Invalid JSON content", doc=str(content), pos=0)
+    except json.JSONDecodeError as err:
+        raise err
+
+
+async def _generate_speaker_resp(
+    gen_func: Callable[..., Any],
+    speakers: list[Speaker] | None = None,
+) -> tuple[Any, str]:
+    """
+    Generate a new speaker character using a language model.
+    Only handles the API request, not the response parsing.
+
+    Args:
+        gen_func: Async function that interfaces with the language model
+        speakers: Optional list of existing speakers to avoid duplication
+
+    Returns:
+        Raw response from the chat function
+    """
+    speakers = speakers or []
+
+    # Prepare messages
+    speaker_names = ""
+    if speakers:
+        speaker_names = f"Speakers so far: {', '.join(s.name for s in speakers)}"
+
+    prompt = gen_speaker_prompt.format(speaker_names=speaker_names, gen_speaker_example=gen_speaker_example)
+    resp = await gen_func(make_messages(prompt, system=gen_speaker_system_prompt))
+    return resp, prompt
+
+
+async def generate_speaker(
+    gen_func: Callable[..., Any],
+    speakers: list[Speaker] | None = None,
+    to_type: Callable[[dict], Any] = lambda x: Speaker(**x),
+):
+    """
+    Generate a new speaker character using a language model.
+    This is split out to allow testing of JUST the response
+    """
+    content, prompt = await _generate_speaker_resp(gen_func, speakers)
+    try:
+        parsed_resp = parse_json_content(content)
+        return to_type(parsed_resp)
+    except json.JSONDecodeError as err:
+        raise ValueError(f"Failed to parse JSON content: {err}") from err
+    except Exception as err:
+        raise ValueError(f"Failed to convert conten to Speaker: {err}") from err
+
+
+# i like this better than decorating, but as noted still an awkward pattern b/c cant pass by name here unless also
+# pass by name in the caller of the partial
+generate_speaker_allow_retry = partial(allow_retry, generate_speaker)
