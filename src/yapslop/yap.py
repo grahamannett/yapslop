@@ -352,11 +352,9 @@ class ConvoManangerQueue(ConvoManager):
 
     async def audio_producer(self, max_audio_length_ms: int = 90_000, to_thread: bool = True):
         while True:
-            turn = await self.text_queue.get()
-            debug(f">>Got text for turn {turn.turn_idx}")
-
-            if turn is None:
+            if (turn := await self.text_queue.get()) is None:
                 break
+            debug(f">>Got text for turn {turn.turn_idx}")
 
             func = self.audio_provider.sync_generate_audio
             if to_thread:
