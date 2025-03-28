@@ -8,7 +8,7 @@ from typing import AsyncGenerator, Iterable
 
 from yapslop.convo_dto import ConvoTurn, Speaker, TextOptions, Segment
 from yapslop.convo_helpers import generate_speaker, make_messages
-from yapslop.yaproviders import TextProvider, AudioProvider
+from yapslop.providers.yaproviders import TextProvider, AudioProvider
 
 # --- prompts
 # - simulator_system_prompt: the system prompt for the simulator

@@ -1,83 +1,18 @@
-from os import getenv
-import httpx
 import pytest
 from json import JSONDecodeError
 from textwrap import indent
 
-from yapslop.convo_helpers import generate_speaker, generate_speaker_allow_retry, _generate_speaker_resp
-from yapslop.yap import ConvoManager, Speaker, TextProvider
+from yapslop.convo_helpers import (
+    generate_speaker,
+    generate_speaker_allow_retry,
+    _generate_speaker_resp,
+    tool_generate_speaker,
+)
+from yapslop.yap import ConvoManager, Speaker
+from yapslop.providers.yaproviders import TextProvider
 from yapslop.yap_common import initial_speakers
 
 pytestmark = pytest.mark.anyio
-
-
-@pytest.fixture
-def speakers_dict():
-    """
-    Dictionary of speakers for the conversation.
-    Use this fixture to avoid having to create them and avoiding doing a mock of the speaker response
-    """
-    return [
-        {
-            "name": "Alice",
-            "description": "Tech entrepreneur. Uses technical jargon, speaks confidently",
-        },
-        {
-            "name": "Bob",
-            "description": "Philosophy professor. Speaks in questions, uses metaphors",
-        },
-        {
-            "name": "Charlie",
-            "description": "Stand-up comedian. Uses humor, makes pop culture references",
-        },
-    ]
-
-
-@pytest.fixture
-def speakers(speakers_dict):
-    """
-    Speaker objects for the conversation.
-    Created from the speakers_dict fixture.
-    """
-    return Speaker.from_data(speakers_dict)
-
-
-@pytest.fixture
-def ollama_client_params():
-    return {
-        "base_url": getenv("ollama_url", "http://localhost:11434"),
-        "timeout": int(getenv("ollama_timeout", 10)),
-    }
-
-
-@pytest.fixture
-def ollama_model_params():
-    return {
-        "model_name": getenv("ollama_model", "gemma3:latest"),
-    }
-
-
-@pytest.fixture
-def ollama_reasoning_model_params():
-    return {
-        "model_name": getenv("ollama_reasoning_model", "qwq:latest"),
-    }
-
-
-@pytest.fixture
-def ollama_params(ollama_client_params, ollama_model_params):
-    return {"client_kwargs": ollama_client_params, "ollama_kwargs": ollama_model_params}
-
-
-@pytest.fixture
-def ollama_reasoning_params(ollama_client_params, ollama_reasoning_model_params):
-    return {"client_kwargs": ollama_client_params, "ollama_kwargs": ollama_reasoning_model_params}
-
-
-@pytest.fixture
-async def text_provider(ollama_params: dict):
-    async with httpx.AsyncClient(**ollama_params["client_kwargs"]) as client:
-        yield TextProvider(client, **ollama_params["ollama_kwargs"])
 
 
 def test_speakers_from_dict(speakers_dict: list[dict]) -> None:
@@ -101,6 +36,7 @@ def test_initial_speakers() -> None:
 
 
 async def test_generate_speaker(text_provider: TextProvider):
+    """Test speaker generation (requires configured API server)."""
     resp, prompt = await _generate_speaker_resp(gen_func=text_provider)
     assert isinstance(resp, str) and "name" in resp
 
@@ -128,6 +64,11 @@ async def test_generate_speaker_allow_retry(text_provider: TextProvider):
     speaker = await generate_speaker_allow_retry(text_provider, max_retries=5)
     assert isinstance(speaker, Speaker)
     assert hasattr(speaker, "name") and hasattr(speaker, "description")
+
+
+async def test_tool_generate_speaker(text_provider: TextProvider) -> None:
+    """Test tool-based speaker generation (requires Ollama server with tool calling)."""
+    speaker_resp = await tool_generate_speaker(text_provider)
 
 
 async def test_convo_generate_speakers(text_provider: TextProvider):

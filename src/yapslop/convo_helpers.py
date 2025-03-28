@@ -5,6 +5,7 @@ from functools import cache, partial
 from typing import Sequence, TypeAlias, Callable, Any
 from yapslop.convo_dto import ConvoTurn, Speaker
 from yapslop.utils.autils import allow_retry
+from yapslop.utils.schema_generator import get_type_schema
 
 MessageType: TypeAlias = list[dict[str, str]]
 
@@ -80,12 +81,12 @@ def get_conversation_as_string(history: list[ConvoTurn]) -> str:  # type: ignore
     return "\n".join([str(turn) for turn in history])
 
 
-def parse_json_content(content: str | dict) -> dict:
+def parse_json_content(content: str) -> dict:
     """
     Parse JSON content from model response, handling various formats.
 
     While using tool calling would be better, not all the models support it and seems like some of the models I am using are very
-    inconsistent with format, e.g. using `“` instead of `"' or not surrounding field with `"`
+    inconsistent with format, e.g. using `" " instead of `"' or not surrounding field with `"`
 
     Args:
         content: Raw response from model as string or dict
@@ -97,12 +98,6 @@ def parse_json_content(content: str | dict) -> dict:
         ValueError: If content is not a string or dict
         JSONDecodeError: If content cannot be parsed as valid JSON
     """
-    # if pass in the raw response, extract the content
-    if isinstance(content, dict):
-        content = content.get("message", content).get("content", content)
-
-    if not isinstance(content, str):
-        raise ValueError(f"Expected string content, got {type(content)}: {content}")
 
     # if parsing json explicitly, remove thinking tags, should keep this info if not just generating characters
     if all(x in content for x in ["<think>", "</think>"]):
@@ -117,6 +112,27 @@ def parse_json_content(content: str | dict) -> dict:
         return json.loads(content)  # type: ignore
     except json.JSONDecodeError as err:
         raise err
+
+
+# import reasoning parser from vllm
+# from vllm.entrypoints.openai.reasoning_parsers import DeepSeekR1ReasoningParser
+
+
+async def tool_generate_speaker(text_provider, speakers: list[Speaker] | None = None) -> dict:
+    """
+    Generate a new character for a conversation using a language model.
+    """
+    # messages = make_messages(gen_speaker_prompt, system=gen_speaker_system_prompt)
+    speaker_names = ""
+    if speakers:
+        speaker_names = f"Speakers so far: {', '.join(s.name for s in speakers)}"
+
+    prompt = gen_speaker_prompt.format(speaker_names=speaker_names, gen_speaker_example=gen_speaker_example)
+    messages = make_messages(prompt, system=gen_speaker_system_prompt)
+    speaker_schema = get_type_schema(Speaker)
+    # resp = await text_provider.chat_oai(messages, model_options={"tools": [speaker_schema]})
+    resp = await text_provider.chat_ollama(messages, tools=[speaker_schema])
+    return resp
 
 
 async def _generate_speaker_resp(
@@ -162,7 +178,7 @@ async def generate_speaker(
     except json.JSONDecodeError as err:
         raise ValueError(f"Failed to parse JSON content: {err}") from err
     except Exception as err:
-        raise ValueError(f"Failed to convert conten to Speaker: {err}") from err
+        raise ValueError(f"Failed to convert content to Speaker: {err}") from err
 
 
 # i like this better than decorating, but as noted still an awkward pattern b/c cant pass by name here unless also

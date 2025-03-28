@@ -1,4 +1,6 @@
 from dataclasses import dataclass
+from typing import Callable, Type
+
 
 import httpx
 import torch
@@ -8,14 +10,14 @@ from yapslop.convo_dto import TextOptions
 from yapslop.convo_helpers import MessageType
 from yapslop.generator import Segment, load_csm_1b
 from yapslop.yap_common import DEVICE
-
+from yapslop.providers.parsers import ReasoningParser, _REQUIRE_PARSERS
 
 # using _Providers as a registry, can store the type of provider, or use like "ollama" in future
 # avoid using too deep a structure for all of this as will make future threading/multiprocessing easier
 _Providers = {}
 
 
-def add_provider(name: str, use_dc: bool = True):
+def add_provider(name: str, use_dc: bool = True) -> Callable[[Type], Type]:
     """
     Decorator to register a provider class in the _Providers registry.
 
@@ -24,9 +26,9 @@ def add_provider(name: str, use_dc: bool = True):
         use_dc: Whether to wrap the class in @dataclass
     """
 
-    def wrapper(func):  # move dataclass to this for slightly clearer code
-        _Providers[name] = dataclass(func) if use_dc else func
-        return func
+    def wrapper(cls):  # move dataclass to this for slightly clearer code
+        _Providers[name] = dataclass(cls) if use_dc else cls
+        return cls
 
     return wrapper
 
@@ -51,6 +53,13 @@ class TextProvider:
     client: httpx.AsyncClient
     model_name: str = "gemma3:latest"
 
+    _requires_parser: bool | ReasoningParser = False
+
+    def __post_init__(self) -> None:
+        _model_name = self.model_name.split(":")[0]
+        if _model_name in _REQUIRE_PARSERS:
+            self._requires_parser = ReasoningParser()
+
     def _from_resp(self, resp: httpx.Response) -> dict:
         """Parse and validate response from API"""
         resp.raise_for_status()
@@ -59,7 +68,13 @@ class TextProvider:
     async def __call__(self, *args, **kwargs) -> str | dict:
         return await self.chat_oai(*args, **kwargs)
 
-    async def chat_oai(self, messages: MessageType, model_options: TextOptions | dict = {}, **kwargs) -> str:
+    async def chat_oai(
+        self,
+        messages: MessageType,
+        model_options: TextOptions | dict = {},
+        _get: Callable[[dict], str] = lambda x: x["choices"][0]["message"]["content"],
+        **kwargs,
+    ) -> str:
         """
         Generate text using OpenAI API endpoint.
 
@@ -74,7 +89,7 @@ class TextProvider:
         if isinstance(model_options, TextOptions):
             model_options = model_options.asdict(**kwargs)
 
-        response = await self.client.post(
+        raw_resp = await self.client.post(
             "/v1/chat/completions",  # openai-compatible endpoint
             json={
                 "model": self.model_name,
@@ -82,8 +97,9 @@ class TextProvider:
                 **model_options,
             },
         )
-        response_data = self._from_resp(response)
-        return response_data["choices"][0]["message"]["content"]
+        resp_json = self._from_resp(raw_resp)
+        resp = _get(resp_json)
+        return resp
 
     async def chat_ollama(
         self,
@@ -91,8 +107,9 @@ class TextProvider:
         stream: bool = False,
         tools: list[dict] | None = None,
         model_options: TextOptions | dict | None = None,
+        _get: Callable[[dict], str] = lambda x: x["message"]["content"],
         **kwargs,
-    ) -> dict:
+    ) -> str:
         """
         Generate a chat completion response using Ollama's API.
 
@@ -120,9 +137,13 @@ class TextProvider:
         if tools:
             payload["tools"] = tools
 
-        response = await self.client.post("/api/chat", json=payload)
-        response_data = self._from_resp(response)
-        return response_data
+        raw_resp = await self.client.post(
+            "/api/chat",
+            json=payload,
+        )
+        resp_json = self._from_resp(raw_resp)
+        resp = _get(resp_json)
+        return resp
 
 
 @add_provider("audio")

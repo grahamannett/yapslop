@@ -65,10 +65,22 @@ class _SID:
 
 
 @dataclass
-class Speaker:
-    """Participant in a conversation."""
+class BaseSpeaker:
+    """
+    Base class for speakers.
+
+    This is used to generate the schema for the speaker.
+    Might be better to name this one `Speaker` and have a `ConvoSpeaker` that is used for the conversation.
+    """
 
     name: str
+    description: str
+
+
+@dataclass
+class Speaker(BaseSpeaker):
+    """Participant in a conversation."""
+
     description: str = ""
     # Make speaker_id a field with a default_factory to get the next ID
     speaker_id: int = field(default_factory=_SID.get_next_id)
