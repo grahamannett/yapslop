@@ -1,12 +1,13 @@
-from pathlib import Path
 import argparse
-import httpx
 import asyncio
+from pathlib import Path
 
-from yapslop.yap import ConvoManager, HTTPConfig
-from yapslop.yaproviders import ProvidersSetup
-from yapslop.yap_common import initial_speakers
+import httpx
+
 from yapslop.audio_helpers import save_combined_audio
+from yapslop.providers.yaproviders import ProvidersSetup
+from yapslop.yap import ConvoManager, HTTPConfig
+from yapslop.yap_common import initial_speakers
 
 _line_sep = "-" * 50
 
@@ -99,17 +100,22 @@ async def demo(
 
 def parse_args():
     """Parse command line arguments for the demo."""
-    parser = argparse.ArgumentParser(description="Run a demonstration of the conversation system with audio output.")
-    parser.add_argument("--num-turns", type=int, default=5, help="Number of conversation turns to generate")
-    parser.add_argument("--model-name", default="gemma3:latest", help="Model name to use for text generation")
-    parser.add_argument("--n-speakers", type=int, default=3, help="Number of speakers in the conversation")
-    parser.add_argument("--audio-output-dir", default="audio_output", help="Directory to save audio files")
-    parser.add_argument("--combined-audio-file", default="combined_audio.wav", help="Filename for combined audio")
+    parser = argparse.ArgumentParser(description="Run demo")
+    parser.add_argument("--num-turns", type=int, default=5, help="Number of turns")
+    parser.add_argument("--model-name", default="gemma3:latest", help="Text generation model")
+    parser.add_argument("--n-speakers", type=int, default=3, help="Number of speakers")
+    parser.add_argument("--audio-output-dir", default="audio_output", help="Dir to save audio files")
+    parser.add_argument("--combined-audio-file", default="combined_audio.wav", help="Combined audio file")
     parser.add_argument(
-        "--cleanup-audio-dir", action="store_true", help="Clean up existing audio files before starting"
+        "--cleanup-audio-dir",
+        action="store_true",
+        help="Clean up existing audio files before starting",
     )
     parser.add_argument(
-        "--max-audio-length-ms", type=int, default=90_000, help="Maximum length of generated audio in milliseconds"
+        "--max-audio-length-ms",
+        type=int,
+        default=90_000,
+        help="Maximum length of generated audio in milliseconds",
     )
     parser.add_argument(
         "--initial-text",
