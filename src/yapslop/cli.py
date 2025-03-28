@@ -6,7 +6,7 @@ import httpx
 
 from yapslop.audio_helpers import save_combined_audio
 from yapslop.providers.yaproviders import ProvidersSetup
-from yapslop.yap import ConvoManager, HTTPConfig
+from yapslop.yap import ConvoManager, ConvoManangerQueue, HTTPConfig
 from yapslop.yap_common import initial_speakers
 
 _line_sep = "-" * 50
@@ -98,6 +98,38 @@ async def demo(
         print(f"Combined audio saved to: {combined_audio_file}")
 
 
+async def demo_queue(
+    n_speakers: int = 3,
+    num_turns: int = 5,
+    initial_text: str = "Did you hear about that new conversational AI model that just came out?",
+    model_name: str = "gemma3:latest",
+    **kwargs,
+):
+    """
+    Demonstrate a multi-speaker conversation with audio generation using a queue.
+
+    This function sets up a conversation with one initial speaker and generates
+    additional speakers as needed. It streams the conversation turn by turn,
+    generating both text and audio for each turn.
+    """
+    async with httpx.AsyncClient(base_url=HTTPConfig.base_url) as client:
+        text_provider, audio_provider = ProvidersSetup(
+            configs={
+                "text": {"client": client, "model_name": model_name},
+                "audio": {},
+            }
+        )
+        convo_manager = ConvoManangerQueue(
+            n_speakers=n_speakers,
+            speakers=initial_speakers,
+            text_provider=text_provider,
+            audio_provider=audio_provider,
+        )
+
+        await convo_manager.setup_speakers()
+        await convo_manager.run(num_turns=num_turns, initial_text=initial_text)
+
+
 def parse_args():
     """Parse command line arguments for the demo."""
     parser = argparse.ArgumentParser(description="Run demo")
@@ -127,4 +159,5 @@ def parse_args():
 
 if __name__ == "__main__":
     args = parse_args()
-    asyncio.run(demo(**vars(args)))
+    asyncio.run(demo_queue(**vars(args)))
+    # asyncio.run(demo(**vars(args)))

@@ -52,7 +52,7 @@ class Segment:
         return hash((self.speaker, self.text))
 
 
-class _SID:
+class ClassSequentialID:
     _next_id: ClassVar[int] = 0
 
     @classmethod
@@ -77,13 +77,17 @@ class BaseSpeaker:
     description: str
 
 
+class SpeakerID(ClassSequentialID):
+    pass
+
+
 @dataclass
 class Speaker(BaseSpeaker):
     """Participant in a conversation."""
 
     description: str = ""
     # Make speaker_id a field with a default_factory to get the next ID
-    speaker_id: int = field(default_factory=_SID.get_next_id)
+    speaker_id: int = field(default_factory=SpeakerID.get_next_id)
 
     @classmethod
     def from_data(cls, data: dict | list[dict] | None = None) -> list["Speaker"]:
@@ -117,6 +121,10 @@ class Speaker(BaseSpeaker):
         return asdict(self)
 
 
+class ConvoTurnID(ClassSequentialID):
+    pass
+
+
 @dataclass
 class ConvoTurn:
     """
@@ -128,7 +136,7 @@ class ConvoTurn:
     # Add audio field to store generated audio
     audio: torch.Tensor | None = None
     audio_path: str | None = None
-    turn_idx: int = 0
+    turn_idx: int = field(default_factory=ConvoTurnID.get_next_id)
 
     def __str__(self) -> str:
         # return f"{self.speaker.name}: {self.text}"

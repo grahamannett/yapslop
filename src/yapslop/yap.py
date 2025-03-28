@@ -1,10 +1,11 @@
+import asyncio
 import random
 import re
 from collections import deque
 from dataclasses import dataclass
 from itertools import count
 from os import makedirs, getenv
-from typing import AsyncGenerator, Iterable
+from typing import Any, AsyncGenerator, Iterable
 
 from yapslop.convo_dto import ConvoTurn, Speaker, TextOptions, Segment
 from yapslop.convo_helpers import generate_speaker, make_messages
@@ -35,7 +36,23 @@ class HTTPConfig:
     base_url: str = getenv("LLM_BASE_URL", "http://localhost:11434")
 
 
-class ConvoManager:
+class ConvoTextMixin:
+    def _clean_generated_text(self, text: str, speaker: Speaker) -> str:
+        """
+        Remove the speaker name from the text if it's at the beginning of the text.
+
+        Args:
+            text: Text to clean
+            speaker: Speaker whose name to remove
+
+        Returns:
+            Cleaned text with speaker name removed if present
+        """
+        text = re.sub(f"^{speaker.name}[:|\n]\\s*", "", text).strip()
+        return text
+
+
+class ConvoManager(ConvoTextMixin):
     """
     Manages a simulated conversation between multiple speakers using a language model.
     """
@@ -43,6 +60,8 @@ class ConvoManager:
     convo_system_prompt: str
     convo_speaker_desc: str
     speakers: list[Speaker]
+    audio_provider: AudioProvider
+    text_provider: TextProvider
 
     def __init__(
         self,
@@ -83,24 +102,14 @@ class ConvoManager:
         self.limit_context_turns = limit_context_turns
 
         # context queue is used for audio generation to have consistent sounds
-        self.context_queue = deque(maxlen=self.limit_context_turns)
+        self._context_queue = deque(maxlen=self.limit_context_turns)
 
         if self.audio_output_dir:
             makedirs(self.audio_output_dir, exist_ok=True)
 
-    def _clean_generated_text(self, text: str, speaker: Speaker) -> str:
-        """
-        Remove the speaker name from the text if it's at the beginning of the text.
-
-        Args:
-            text: Text to clean
-            speaker: Speaker whose name to remove
-
-        Returns:
-            Cleaned text with speaker name removed if present
-        """
-        text = re.sub(f"^{speaker.name}[:|\n]\\s*", "", text).strip()
-        return text
+    @property
+    def context_queue(self):
+        return list(self._context_queue)
 
     def _post_turn(self, turn: ConvoTurn, save_audio: bool) -> ConvoTurn:
         """
@@ -120,7 +129,7 @@ class ConvoManager:
 
         if turn.audio is not None:
             segment: Segment = turn.segment
-            self.context_queue.append(segment)
+            self._context_queue.append(segment)
 
         return turn
 
@@ -211,44 +220,36 @@ class ConvoManager:
         if not speaker:
             speaker = self.select_next_speaker()
 
-        turn = ConvoTurn(speaker=speaker)
-
         # --- Generate Text For the Turn if none provided
         if text is None:
-            convo_history = "\n".join([str(turn) for turn in self.history])
-
             convo_system_prompt = simulator_system_prompt.format(
                 convo_speaker_desc=self.convo_speaker_desc,
-                convo_history=convo_history,
+                convo_history="\n".join([str(turn) for turn in self.history]),
             )
 
             msgs = make_messages(f"{speaker.name}:", system=convo_system_prompt)
 
-            text = await self.text_provider.chat_oai(messages=msgs, model_options=self.text_options)
+            text: str = await self.text_provider.chat_oai(messages=msgs, model_options=self.text_options)
             text = self._clean_generated_text(text=text, speaker=speaker)
 
-        turn.text = text
+        turn = ConvoTurn(speaker=speaker, text=text)
+        context: list[Any] = self.context_queue
+
+        def _gen_audio(text_):
+            return self.audio_provider.generate_audio(
+                text=text_,
+                speaker_id=turn.speaker.speaker_id,
+                context=context,
+                max_audio_length_ms=max_audio_length_ms,
+            )
 
         # --- Generate Audio For the Turn
-        if do_audio_generate and self.audio_provider:
-            context = list(self.context_queue)
-
+        if do_audio_generate and self.audio_provider and turn.text:
             try:
-                audio = self.audio_provider.generate_audio(
-                    text=turn.text,
-                    speaker_id=turn.speaker.speaker_id,
-                    context=context,
-                    max_audio_length_ms=max_audio_length_ms,
-                )
+                audio = await _gen_audio(turn.text)
             except Exception:
                 print(f"Error generating text: {turn.text}, shortening text")
-                turn.text = await self._create_shorter_text(turn.text)
-                audio = self.audio_provider.generate_audio(
-                    text=turn.text,
-                    speaker_id=turn.speaker.speaker_id,
-                    context=context,
-                    max_audio_length_ms=max_audio_length_ms,
-                )
+                audio = await _gen_audio(await self._create_shorter_text(turn.text))
 
             turn.audio = audio
             turn = self._post_turn(turn, save_audio=save_audio)
@@ -308,3 +309,57 @@ class ConvoManager:
             # reset the phrase and speaker for the next turn
             text = None
             speaker = None
+
+
+class ConvoManangerQueue(ConvoManager):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.audio_queue = asyncio.Queue()
+        self.text_queue = asyncio.Queue()
+
+    async def text_producer(self):
+        for turn in range(self.num_turns):
+            speaker = self.select_next_speaker()
+
+            convo_system_prompt = simulator_system_prompt.format(
+                convo_speaker_desc=self.convo_speaker_desc,
+                convo_history="\n".join([str(turn) for turn in self.history]),
+            )
+
+            msgs = make_messages(f"{speaker.name}:", system=convo_system_prompt)
+
+            text: str = await self.text_provider.chat_oai(messages=msgs, model_options=self.text_options)
+            text = self._clean_generated_text(text=text, speaker=speaker)
+
+            turn = ConvoTurn(speaker=speaker, text=text)
+
+            print(f"Generated {turn.turn_idx} in text queue: {turn.text[0:10]}")
+            await self.text_queue.put(turn)
+
+        await self.text_queue.put(None)
+
+    async def audio_producer(self):
+        max_audio_length_ms = 90_000
+        while True:
+            turn = await self.text_queue.get()
+
+            if turn is None:
+                break
+
+            audio = self.audio_provider.generate_audio(
+                text=turn.text,
+                speaker_id=turn.speaker.speaker_id,
+                context=self.context_queue,
+                max_audio_length_ms=max_audio_length_ms,
+            )
+            print(f"||Generated audio for turn {turn.turn_idx}")
+
+    async def run(self, num_turns: int = 3, initial_text: str | None = None, **kwargs):
+        self.num_turns = num_turns
+        self.initial_text = initial_text
+
+        await asyncio.gather(
+            self.text_producer(),
+            self.audio_producer(),
+        )

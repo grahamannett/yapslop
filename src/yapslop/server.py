@@ -2,7 +2,6 @@ import asyncio
 import io
 import traceback
 from contextlib import asynccontextmanager
-from enum import Enum
 from pathlib import Path
 from typing import Any
 

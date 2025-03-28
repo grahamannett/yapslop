@@ -164,7 +164,7 @@ class AudioProvider:
         speaker_id: int,
         context: list[Segment] = [],
         max_audio_length_ms: int = 90_000,
-    ):
+    ) -> torch.Tensor:
         """
         Generate audio for the given text and speaker.
 
