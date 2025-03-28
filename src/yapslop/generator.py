@@ -13,6 +13,15 @@ from csm.models import Model
 from csm.generator import load_llama3_tokenizer, Generator as CSMGenerator
 
 
+def _add_watermark(watermarker, audio: torch.Tensor, sample_rate: int) -> torch.Tensor:
+    # This applies an imperceptible watermark to identify audio as AI-generated.
+    # Watermarking ensures transparency, dissuades misuse, and enables traceability.
+    # Please be a responsible AI citizen and keep the watermarking in place.
+    # If using CSM 1B in another application, use your own private key and keep it secret.
+    audio, wm_sample_rate = watermark(watermarker, audio, sample_rate, CSM_1B_GH_WATERMARK)
+    return torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=sample_rate)
+
+
 class Generator(CSMGenerator):
     use_wm: bool = False
 
@@ -25,6 +34,7 @@ class Generator(CSMGenerator):
         self._model.setup_caches(1)
 
         self._text_tokenizer = load_llama3_tokenizer()
+        self._text_tokenizer.pad_token_id = 0  # either 0 or tokenizer.eos_token_id, need to manually verify
 
         if device is None:
             device = next(model.parameters()).device
@@ -39,16 +49,43 @@ class Generator(CSMGenerator):
         self.sample_rate = mimi.sample_rate
         self.device = device
 
-    def watermark(self, audio: torch.Tensor) -> torch.Tensor:
-        # This applies an imperceptible watermark to identify audio as AI-generated.
-        # Watermarking ensures transparency, dissuades misuse, and enables traceability.
-        # Please be a responsible AI citizen and keep the watermarking in place.
-        # If using CSM 1B in another application, use your own private key and keep it secret.
-        audio, wm_sample_rate = watermark(self._watermarker, audio, self.sample_rate, CSM_1B_GH_WATERMARK)
-        return torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=self.sample_rate)
+    def _tokenize_text_segment_fast(
+        self,
+        text: str | list[str],
+        speaker: int | list[int],
+        **kwargs,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Tokenize text segment using fast method
 
-    @cache
+        Also allows for batching?
+        """
+        if isinstance(text, str):
+            text = [text]
+        if isinstance(speaker, int):
+            speaker = [speaker]
+
+        text = [f"[{s}]{t}" for t, s in zip(text, speaker)]
+        text_tokens = self._text_tokenizer(
+            text,
+            return_tensors="pt",
+            return_attention_mask=False,
+            padding=True,
+            **kwargs,
+        ).input_ids
+        text_frame = torch.zeros(text_tokens.size(1), 33, device=self.device, dtype=torch.long)
+        text_frame[:, -1] = text_tokens
+        text_frame_mask = torch.zeros(text_tokens.size(1), 33, device=self.device, dtype=torch.bool)
+        text_frame_mask[:, -1] = True
+
+        return text_frame, text_frame_mask
+
     def _tokenize_text_segment(self, text: str, speaker: int) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        the way they are just appending to the list, i get the feeling they are using some more
+        complicated cache method to store the `frame` and `mask` tensors, probably would improve perf
+        a lot although tokenization is not the bottleneck
+        """
         frame_tokens = []
         frame_masks = []
 
@@ -152,7 +189,7 @@ class Generator(CSMGenerator):
         audio = self._audio_tokenizer.decode(torch.stack(samples).permute(1, 2, 0)).squeeze(0).squeeze(0)
 
         if self.use_wm:
-            audio = self.watermark(audio)
+            audio = _add_watermark(self._watermarker, audio, self.sample_rate)
 
         return audio
 

@@ -101,6 +101,12 @@ def generator(device):
 def csm_generator(device):
     """
     Fixture to load the CSM-1B model, mostly for benchmarking or verifying yapslop.generator
+
+    Note that using the csm.generator.load_csm_1b will raise multiple warnings related to loading the watermarker
+    this is expected and is from silentcipher.server.Model since torch.load is used to load the checkpoints
+    tbh it seems like the load_models in that is just loading state_dicts, so probably can be fixed if just passing
+    torch.load(..., weights_only=True), dunno exactly though but think its this:
+    - https://github.com/sony/silentcipher/blob/c11afe0e2df73f1ac0f848e2903b8af36e6a0b10/src/silentcipher/server.py#L444
     """
     from csm.generator import load_csm_1b
 
