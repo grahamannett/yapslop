@@ -33,6 +33,14 @@ def add_provider(name: str, use_dc: bool = True) -> Callable[[Type], Type]:
     return wrapper
 
 
+def AddProvider(cls, name: str):
+    # using this is better for IDE to show info about the type, compared to:
+    # > @add_provider(type)
+    # i'm guessing there is a way to do that the type annotation that is needed for
+    # add_provider is not clear to me
+    _Providers[name] = cls
+
+
 def ProvidersSetup(configs: dict[str, dict]):
     """
     Initialize provider instances from a config dictionary.
@@ -46,7 +54,7 @@ def ProvidersSetup(configs: dict[str, dict]):
     return [_Providers[key](**config) for key, config in configs.items()]
 
 
-@add_provider("text")
+@dataclass
 class TextProvider:
     """Base class for model providers, can switch to using pydantic-ai/vllm/etc later"""
 
@@ -146,7 +154,7 @@ class TextProvider:
         return resp
 
 
-@add_provider("audio")
+@dataclass
 class AudioProvider:
     repo_id: str = "sesame/csm-1b"
     device: str = DEVICE
@@ -212,3 +220,7 @@ class AudioProvider:
             file_path: Path to save the audio file to
         """
         torchaudio.save(file_path, audio.unsqueeze(0).cpu(), self.sample_rate)
+
+
+AddProvider(TextProvider, "text")
+AddProvider(AudioProvider, "audio")

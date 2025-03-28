@@ -1,17 +1,18 @@
 import asyncio
-from functools import partial
 import random
 import re
 from collections import deque
 from dataclasses import dataclass
+from functools import partial
+from inspect import isawaitable
 from itertools import count
-from os import makedirs, getenv
-from typing import Any, AsyncGenerator, Coroutine, Iterable
+from os import getenv, makedirs
+from typing import Any, AsyncGenerator, Iterable
 
-from yapslop.convo_dto import ConvoTurn, Speaker, TextOptions, Segment
+from yapslop.convo_dto import ConvoTurn, Segment, Speaker, TextOptions
 from yapslop.convo_helpers import generate_speaker, make_messages
-from yapslop.providers.yaproviders import TextProvider, AudioProvider
-from yapslop.utils.console import info, debug, rule
+from yapslop.providers.yaproviders import AudioProvider, TextProvider
+from yapslop.utils.console import debug, info
 
 # --- prompts
 # - simulator_system_prompt: the system prompt for the simulator
@@ -244,7 +245,7 @@ class ConvoManager(ConvoTextMixin):
 
             msgs = make_messages(f"{speaker.name}:", system=convo_system_prompt)
 
-            text: str = await self.text_provider.chat_oai(messages=msgs, model_options=self.text_options)
+            text = await self.text_provider.chat_oai(messages=msgs, model_options=self.text_options)
             text = self._clean_generated_text(text=text, speaker=speaker)
 
         turn = ConvoTurn(speaker=speaker, text=text)
@@ -339,7 +340,7 @@ class ConvoManangerQueue(ConvoManager):
 
             msgs = make_messages(f"{speaker.name}:", system=convo_system_prompt)
 
-            text: str = await self.text_provider.chat_oai(messages=msgs, model_options=self.text_options)
+            text = await self.text_provider.chat_oai(messages=msgs, model_options=self.text_options)
             text = self._clean_generated_text(text=text, speaker=speaker)
 
             turn = ConvoTurn(speaker=speaker, text=text)
@@ -352,19 +353,14 @@ class ConvoManangerQueue(ConvoManager):
     async def audio_producer(self, max_audio_length_ms: int = 90_000, to_thread: bool = True):
         while True:
             turn = await self.text_queue.get()
+            debug(f">>Got text for turn {turn.turn_idx}")
 
             if turn is None:
                 break
 
             func = self.audio_provider.sync_generate_audio
             if to_thread:
-
-                def pfunc(text, speaker_id, context, max_audio_length_ms):
-                    return asyncio.to_thread(func, text, speaker_id, context, max_audio_length_ms)
-
-                func = pfunc
-
-            debug(f">>Got text for turn {turn.turn_idx}")
+                func = partial(asyncio.to_thread, func)
 
             audio = func(
                 text=turn.text,
@@ -373,7 +369,7 @@ class ConvoManangerQueue(ConvoManager):
                 max_audio_length_ms=max_audio_length_ms,
             )
 
-            if isinstance(audio, Coroutine):
+            if isawaitable(audio):
                 audio = await audio
 
             debug(f"Generated audio for turn {turn.turn_idx} {len(audio)=}")
