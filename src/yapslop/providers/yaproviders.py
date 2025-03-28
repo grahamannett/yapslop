@@ -53,12 +53,12 @@ class TextProvider:
     client: httpx.AsyncClient
     model_name: str = "gemma3:latest"
 
-    _requires_parser: bool | ReasoningParser = False
+    _parser: bool | ReasoningParser = False
 
     def __post_init__(self) -> None:
-        _model_name = self.model_name.split(":")[0]
-        if _model_name in _REQUIRE_PARSERS:
-            self._requires_parser = ReasoningParser()
+        # possibly split model_name and check just for name:version
+        if self.model_name in _REQUIRE_PARSERS:
+            self._parser = ReasoningParser()
 
     def _from_resp(self, resp: httpx.Response) -> dict:
         """Parse and validate response from API"""

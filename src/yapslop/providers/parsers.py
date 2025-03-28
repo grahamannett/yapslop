@@ -1,7 +1,19 @@
 import re
+import warnings
 
 # is there a way to get this info from the server?
-_REQUIRE_PARSERS = ["qwq:latest", "deepseek-r1:7b"]
+_REQUIRE_PARSERS = [
+    "qwq:latest",
+    "deepseek-r1:7b",
+]
+
+
+def remove_thinking_block(content: str):
+    # if parsing json explicitly, remove thinking tags, should keep this info if not just generating characters
+    if all(x in content for x in ["<think>", "</think>"]):
+        warnings.warn("Switch to using ReasoningParser")
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+    return content
 
 
 class ReasoningParser:

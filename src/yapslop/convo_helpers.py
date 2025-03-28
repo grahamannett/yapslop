@@ -1,9 +1,10 @@
 import json
 import re
-
 from functools import cache, partial
-from typing import Sequence, TypeAlias, Callable, Any
+from typing import Any, Callable, Sequence, TypeAlias
+
 from yapslop.convo_dto import ConvoTurn, Speaker
+from yapslop.providers.parsers import remove_thinking_block
 from yapslop.utils.autils import allow_retry
 from yapslop.utils.schema_generator import get_type_schema
 
@@ -99,23 +100,17 @@ def parse_json_content(content: str) -> dict:
         JSONDecodeError: If content cannot be parsed as valid JSON
     """
 
-    # if parsing json explicitly, remove thinking tags, should keep this info if not just generating characters
-    if all(x in content for x in ["<think>", "</think>"]):
-        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL)
+    content = remove_thinking_block(content)
 
     # check if the content has a ```json block which we should extract
     if "```" in content:
-        match = re.search(r"```(?:json)?\n(.*?)\n```", content, re.DOTALL)
-        content = match.group(1) if match else content
+        content_match = re.search(r"```(?:json)?\n(.*?)\n```", content, re.DOTALL)
+        content = content_match.group(1) if content_match else content
 
     try:
         return json.loads(content)  # type: ignore
     except json.JSONDecodeError as err:
         raise err
-
-
-# import reasoning parser from vllm
-# from vllm.entrypoints.openai.reasoning_parsers import DeepSeekR1ReasoningParser
 
 
 async def tool_generate_speaker(text_provider, speakers: list[Speaker] | None = None) -> dict:
@@ -132,6 +127,13 @@ async def tool_generate_speaker(text_provider, speakers: list[Speaker] | None = 
     speaker_schema = get_type_schema(Speaker)
     # resp = await text_provider.chat_oai(messages, model_options={"tools": [speaker_schema]})
     resp = await text_provider.chat_ollama(messages, tools=[speaker_schema])
+
+    if text_provider._parser:
+        thinking, content = text_provider._parser.extract(resp)
+        resp = content[0]
+
+    resp = parse_json_content(resp)
+
     return resp
 
 
