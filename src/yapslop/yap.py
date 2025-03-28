@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import random
 import re
 from collections import deque
@@ -120,14 +121,14 @@ class ConvoManager(ConvoTextMixin):
         self.limit_context_turns = limit_context_turns
 
         # context queue is used for audio generation to have consistent sounds
-        self._context_queue = deque(maxlen=self.limit_context_turns)
+        self.context_queue = deque(maxlen=self.limit_context_turns)
 
         if self.audio_output_dir:
             makedirs(self.audio_output_dir, exist_ok=True)
 
     @property
-    def context_queue(self):
-        return list(self._context_queue)
+    def context_list(self):
+        return list(self.context_queue)
 
     def _get_turn_iter(self, num_turns: int | Iterable):
         # allow for the number of turns to be a count, a range, or an iterable
@@ -158,7 +159,7 @@ class ConvoManager(ConvoTextMixin):
 
         if turn.audio is not None:
             segment: Segment = turn.segment
-            self._context_queue.append(segment)
+            self.context_queue.append(segment)
 
         return turn
 
@@ -249,7 +250,7 @@ class ConvoManager(ConvoTextMixin):
             text = self._clean_generated_text(text=text, speaker=speaker)
 
         turn = ConvoTurn(speaker=speaker, text=text)
-        context: list[Any] = self.context_queue
+        context: list[Any] = self.context_list
 
         async def _gen_audio(text_):
             return await self.audio_provider.generate_audio(
@@ -324,8 +325,13 @@ class ConvoManangerQueue(ConvoManager):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        self.audio_queue = asyncio.Queue()
-        self.text_queue = asyncio.Queue()
+        # audio gen queue is while the audio is being generated to allow for other turns to be generated
+        self.audio_gen_queue = asyncio.Queue()
+
+        # done queues are used to signal the end of the generation
+        self.audio_done_queue = asyncio.Queue()
+        self.text_done_queue = asyncio.Queue()
+        self.thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=4)  # Adjust max_workers as needed
 
     async def text_producer(self, num_turns: int | Iterable):
         num_turns = self._get_turn_iter(num_turns)
@@ -345,39 +351,110 @@ class ConvoManangerQueue(ConvoManager):
 
             turn = ConvoTurn(speaker=speaker, text=text)
 
-            await self.text_queue.put(turn)
+            await self.text_done_queue.put(turn)
             info(f"Generated text for turn {turn.turn_idx}")
 
-        await self.text_queue.put(None)
+        await self.text_done_queue.put(None)
 
-    async def audio_producer(self, max_audio_length_ms: int = 90_000, to_thread: bool = True):
+    async def audio_producer(
+        self,
+        max_audio_length_ms: int = 90_000,
+        save_audio: bool = False,
+        to_thread: bool = False,
+        **kwargs,
+    ):
         while True:
-            if (turn := await self.text_queue.get()) is None:
+            if (turn := await self.text_done_queue.get()) is None:
                 break
-            debug(f">>Got text for turn {turn.turn_idx}")
 
             func = self.audio_provider.sync_generate_audio
             if to_thread:
                 func = partial(asyncio.to_thread, func)
 
-            audio = func(
+            turn.audio = func(
                 text=turn.text,
                 speaker_id=turn.speaker.speaker_id,
-                context=self.context_queue,
+                context=self.context_list,
                 max_audio_length_ms=max_audio_length_ms,
             )
 
-            if isawaitable(audio):
-                audio = await audio
+            if isawaitable(turn.audio):
+                turn.audio = await turn.audio
 
-            debug(f"Generated audio for turn {turn.turn_idx} {len(audio)=}")
-            await self.audio_queue.put(audio)
+            turn = self._post_turn(turn, save_audio=save_audio)
+            await self.audio_gen_queue.put(turn)
+            debug(f"Generated audio for turn: {turn.turn_idx} {len(turn.audio)=}")  # type: ignore
+        info("Audio Producer Done")
 
-    async def run(self, num_turns: int = 3, initial_text: str | None = None, to_thread: bool = False, **kwargs):
+    async def audio_producer_with_pool(
+        self,
+        max_audio_length_ms: int = 90_000,
+        **kwargs,
+    ):
+        while True:
+            if (turn := await self.text_done_queue.get()) is None:
+                break
+
+            turn.audio = self.thread_pool.submit(
+                self.audio_provider.sync_generate_audio,
+                turn.text,
+                turn.speaker.speaker_id,
+                self.context_list,
+                max_audio_length_ms,
+            )
+
+            debug(f"Audio future created for turn: {turn.turn_idx}")
+            # await self.audio_gen_queue.put(turn)
+        info("AudioPool Producer Done")
+
+    async def audio_consumer_with_pool(
+        self,
+        save_audio: bool = False,
+        **kwargs,
+    ):
+        while True:
+            if (turn := await self.audio_gen_queue.get()) is None:
+                debug("Audio Consumer Got None")
+                break
+
+            turn.audio = turn.audio.result()
+            turn = self._post_turn(turn, save_audio=save_audio)
+            debug(f"Generated audio for turn: {turn.turn_idx} {len(turn.audio)=}")  # type: ignore
+
+            await self.audio_done_queue.put(turn)
+
+    async def cleanup(self, wait: bool = True, cancel_futures: bool = True):
+        """Clean up resources when done."""
+        info("Shutdown Threadpool")
+        self.thread_pool.shutdown(wait=wait, cancel_futures=cancel_futures)
+
+    async def run(
+        self,
+        num_turns: int = 3,
+        initial_text: str | None = None,
+        max_audio_length_ms: int = 90_000,
+        to_thread: bool = False,
+        save_audio: bool = False,
+        use_thread_pool: bool = False,
+        **kwargs,
+    ):
         self.initial_text = initial_text
         info(f"Running with {num_turns} turns, {to_thread=}")
 
-        await asyncio.gather(
-            self.text_producer(num_turns=num_turns),
-            self.audio_producer(to_thread=to_thread),
-        )
+        if use_thread_pool:
+            audio_funcs = [
+                self.audio_producer_with_pool(max_audio_length_ms=max_audio_length_ms),
+                self.audio_consumer_with_pool(save_audio=save_audio),
+            ]
+        else:
+            audio_funcs = [
+                self.audio_producer(
+                    to_thread=to_thread,
+                    max_audio_length_ms=max_audio_length_ms,
+                    save_audio=save_audio,
+                )
+            ]
+        try:
+            await asyncio.gather(self.text_producer(num_turns=num_turns), *audio_funcs)
+        finally:
+            await self.cleanup()

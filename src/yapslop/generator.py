@@ -1,22 +1,16 @@
 from functools import cache
-from typing import Generator as GeneratorType
 
 import torch
 import torchaudio
-import time
+
+from moshi.models import loaders
+from huggingface_hub import hf_hub_download
 
 from yapslop.convo_dto import Segment
 
-from csm.generator import (
-    CSM_1B_GH_WATERMARK,
-    Model,
-    hf_hub_download,
-    load_llama3_tokenizer,
-    load_watermarker,
-    loaders,
-    watermark,
-)
-from csm.generator import Generator as CSMGenerator
+from csm.watermarking import CSM_1B_GH_WATERMARK, load_watermarker, watermark
+from csm.models import Model
+from csm.generator import load_llama3_tokenizer, Generator as CSMGenerator
 
 
 class Generator(CSMGenerator):
@@ -25,13 +19,16 @@ class Generator(CSMGenerator):
     def __init__(
         self,
         model: Model,
+        device: str | None = None,
     ):
         self._model = model
         self._model.setup_caches(1)
 
         self._text_tokenizer = load_llama3_tokenizer()
 
-        device = next(model.parameters()).device
+        if device is None:
+            device = next(model.parameters()).device
+
         mimi_weight = hf_hub_download(loaders.DEFAULT_REPO, loaders.MIMI_NAME)
         mimi = loaders.get_mimi(mimi_weight, device=device)
         mimi.set_num_codebooks(32)
@@ -51,8 +48,56 @@ class Generator(CSMGenerator):
         return torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=self.sample_rate)
 
     @cache
+    def _tokenize_text_segment(self, text: str, speaker: int) -> tuple[torch.Tensor, torch.Tensor]:
+        frame_tokens = []
+        frame_masks = []
+
+        text_tokens = self._text_tokenizer.encode(f"[{speaker}]{text}")
+        text_frame = torch.zeros(len(text_tokens), 33).long()
+        text_frame_mask = torch.zeros(len(text_tokens), 33).bool()
+        text_frame[:, -1] = torch.tensor(text_tokens)
+        text_frame_mask[:, -1] = True
+
+        frame_tokens.append(text_frame.to(self.device))
+        frame_masks.append(text_frame_mask.to(self.device))
+
+        text_tokens, text_masks = torch.cat(frame_tokens, dim=0), torch.cat(frame_masks, dim=0)
+        return text_tokens, text_masks
+
+    def _tokenize_audio(self, audio: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        frame_tokens = []
+        frame_masks = []
+
+        # (K, T)
+        audio = audio.to(self.device)
+        audio_tokens = self._audio_tokenizer.encode(audio.unsqueeze(0).unsqueeze(0))[0]
+        # add EOS frame
+        eos_frame = torch.zeros(audio_tokens.size(0), 1).to(self.device)
+        audio_tokens = torch.cat([audio_tokens, eos_frame], dim=1)
+
+        audio_frame = torch.zeros(audio_tokens.size(1), 33).long().to(self.device)
+        audio_frame_mask = torch.zeros(audio_tokens.size(1), 33).bool().to(self.device)
+        audio_frame[:, :-1] = audio_tokens.transpose(0, 1)
+        audio_frame_mask[:, :-1] = True
+
+        frame_tokens.append(audio_frame)
+        frame_masks.append(audio_frame_mask)
+
+        audio_tokens, audio_masks = torch.cat(frame_tokens, dim=0), torch.cat(frame_masks, dim=0)
+        return audio_tokens, audio_masks
+
+    # @cache
     def _tokenize_segment(self, segment: Segment) -> tuple[torch.Tensor, torch.Tensor]:
-        return super()._tokenize_segment(segment)
+        """
+        Returns:
+            (seq_len, 33), (seq_len, 33)
+
+        was using super()._tokenize_segment(segment), but not clear if there was any benefit to that
+        """
+        text_tokens, text_masks = self._tokenize_text_segment(segment.text, segment.speaker)
+        audio_tokens, audio_masks = self._tokenize_audio(segment.audio)
+
+        return torch.cat([text_tokens, audio_tokens], dim=0), torch.cat([text_masks, audio_masks], dim=0)
 
     @torch.inference_mode()
     def generate(
@@ -121,7 +166,7 @@ class Generator(CSMGenerator):
         temperature: float = 0.9,
         topk: int = 50,
         chunk_size: int = 1000,  # Size of audio chunks to yield in milliseconds
-    ) -> GeneratorType[torch.Tensor, None, None]:
+    ):
         """Stream audio generation, yielding chunks as they're generated.
 
         Args:
@@ -143,5 +188,5 @@ def load_csm_1b(device: str = "cuda") -> Generator:
     model = Model.from_pretrained("sesame/csm-1b")
     model.to(device=device, dtype=torch.bfloat16)
 
-    generator = Generator(model)
+    generator = Generator(model, device)
     return generator
