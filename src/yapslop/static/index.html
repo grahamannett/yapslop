@@ -81,6 +81,14 @@
         let isPlaying = false;
         const initialPhraseInput = document.getElementById('initialPhrase');
 
+        const MsgTypes = {
+            initial: "initial:",
+            info: "slopinfo:",
+            speaking: "yap:",
+            complete: "complete:",
+            error: "bruh:"
+        }
+
         function updateStatus(message) {
             status.textContent = message;
         }
@@ -149,17 +157,17 @@
             ws.onmessage = async (event) => {
                 if (typeof event.data === 'string') {
                     const message = event.data;
-                    if (message.startsWith('speaking:')) {
+                    if (message.startsWith(MsgTypes.speaking)) {
                         const [_, speaker, text] = message.split(':');
                         addConversationTurn(speaker, text);
                         updateStatus(`${speaker} is speaking...`);
-                    } else if (message.startsWith('slopinfo:')) {
+                    } else if (message.startsWith(MsgTypes.info)) {
                         const [_, info] = message.split(':');
                         updateStatus(info);
                         addConversationTurn("SLOPINFO", info);
-                    } else if (message.startsWith('error:')) {
+                    } else if (message.startsWith(MsgTypes.error)) {
                         updateStatus('Error: ' + message.slice(6));
-                    } else if (message.startsWith('complete:')) {
+                    } else if (message.startsWith(MsgTypes.complete)) {
                         updateStatus('Conversation finished!');
                         cleanup();
                     } else {
