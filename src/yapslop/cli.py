@@ -103,6 +103,7 @@ async def demo_queue(
     num_turns: int = 5,
     initial_text: str = "Did you hear about that new conversational AI model that just came out?",
     model_name: str = "gemma3:latest",
+    to_thread: bool = False,
     **kwargs,
 ):
     """
@@ -127,7 +128,7 @@ async def demo_queue(
         )
 
         await convo_manager.setup_speakers()
-        await convo_manager.run(num_turns=num_turns, initial_text=initial_text)
+        await convo_manager.run(num_turns=num_turns, initial_text=initial_text, to_thread=to_thread)
 
 
 def parse_args():
@@ -138,6 +139,7 @@ def parse_args():
     parser.add_argument("--n-speakers", type=int, default=3, help="Number of speakers")
     parser.add_argument("--audio-output-dir", default="audio_output", help="Dir to save audio files")
     parser.add_argument("--combined-audio-file", default="combined_audio.wav", help="Combined audio file")
+    parser.add_argument("--to-thread", action="store_true", help="Run audio generation in a thread")
     parser.add_argument(
         "--cleanup-audio-dir",
         action="store_true",

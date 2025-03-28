@@ -158,7 +158,7 @@ class AudioProvider:
     def sample_rate(self) -> int:
         return self.generator.sample_rate
 
-    def generate_audio(
+    async def generate_audio(
         self,
         text: str,
         speaker_id: int,
@@ -185,6 +185,23 @@ class AudioProvider:
         )
 
         return audio
+
+    def sync_generate_audio(
+        self,
+        text: str,
+        speaker_id: int,
+        context: list[Segment] = [],
+        max_audio_length_ms: int = 90_000,
+    ) -> torch.Tensor:
+        """
+        Even though generate is sync atm, it will be async if moved to a different process/external service
+        """
+        return self.generator.generate(
+            text=text,
+            speaker=speaker_id,
+            context=context,
+            max_audio_length_ms=max_audio_length_ms,
+        )
 
     def save_audio(self, audio: torch.Tensor, file_path: str):
         """

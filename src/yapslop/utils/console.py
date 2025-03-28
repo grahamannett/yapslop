@@ -11,6 +11,22 @@ from rich.align import AlignMethod
 console = Console()
 
 
+def print(msg: str, **kwargs):
+    console.print(msg, **kwargs)
+
+
+def info(msg: str, **kwargs):
+    print(f"[cyan]Info: {msg}[/cyan]", **kwargs)
+
+
+def debug(msg: str, **kwargs):
+    print(f"[purple]Debug: {msg}[/purple]", **kwargs)
+
+
+def rule(msg: str, **kwargs):
+    console.rule(msg, **kwargs)
+
+
 def generated_message_panel(
     *renderable: RenderableType,
     title: str = "Message",

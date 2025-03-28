@@ -1,15 +1,17 @@
 import asyncio
+from functools import partial
 import random
 import re
 from collections import deque
 from dataclasses import dataclass
 from itertools import count
 from os import makedirs, getenv
-from typing import Any, AsyncGenerator, Iterable
+from typing import Any, AsyncGenerator, Coroutine, Iterable
 
 from yapslop.convo_dto import ConvoTurn, Speaker, TextOptions, Segment
 from yapslop.convo_helpers import generate_speaker, make_messages
 from yapslop.providers.yaproviders import TextProvider, AudioProvider
+from yapslop.utils.console import info, debug, rule
 
 # --- prompts
 # - simulator_system_prompt: the system prompt for the simulator
@@ -37,6 +39,9 @@ class HTTPConfig:
 
 
 class ConvoTextMixin:
+    text_provider: TextProvider
+    text_options: TextOptions
+
     def _clean_generated_text(self, text: str, speaker: Speaker) -> str:
         """
         Remove the speaker name from the text if it's at the beginning of the text.
@@ -51,6 +56,19 @@ class ConvoTextMixin:
         text = re.sub(f"^{speaker.name}[:|\n]\\s*", "", text).strip()
         return text
 
+    async def _create_shorter_text(self, text: str) -> str:
+        """
+        Create a shorter version of the given text while preserving meaning.
+
+        Args:
+            text: Text to shorten
+
+        Returns:
+            Shortened version of the text
+        """
+        messages = make_messages(shorter_system_prompt, text)
+        return await self.text_provider.chat_oai(messages=messages, model_options=self.text_options)
+
 
 class ConvoManager(ConvoTextMixin):
     """
@@ -61,7 +79,6 @@ class ConvoManager(ConvoTextMixin):
     convo_speaker_desc: str
     speakers: list[Speaker]
     audio_provider: AudioProvider
-    text_provider: TextProvider
 
     def __init__(
         self,
@@ -111,6 +128,17 @@ class ConvoManager(ConvoTextMixin):
     def context_queue(self):
         return list(self._context_queue)
 
+    def _get_turn_iter(self, num_turns: int | Iterable):
+        # allow for the number of turns to be a count, a range, or an iterable
+        match num_turns:
+            case -1:
+                num_turns = count()
+            case int():
+                num_turns = range(num_turns)
+            case Iterable():
+                num_turns = num_turns
+        return num_turns
+
     def _post_turn(self, turn: ConvoTurn, save_audio: bool) -> ConvoTurn:
         """
         Process a turn after generation - save audio if needed and update context.
@@ -132,19 +160,6 @@ class ConvoManager(ConvoTextMixin):
             self._context_queue.append(segment)
 
         return turn
-
-    async def _create_shorter_text(self, text: str) -> str:
-        """
-        Create a shorter version of the given text while preserving meaning.
-
-        Args:
-            text: Text to shorten
-
-        Returns:
-            Shortened version of the text
-        """
-        messages = make_messages(shorter_system_prompt, text)
-        return await self.text_provider.chat_oai(messages=messages, model_options=self.text_options)
 
     async def setup_speakers(
         self, n_speakers: int | None = None, speakers: list[Speaker] | None = None
@@ -235,8 +250,8 @@ class ConvoManager(ConvoTextMixin):
         turn = ConvoTurn(speaker=speaker, text=text)
         context: list[Any] = self.context_queue
 
-        def _gen_audio(text_):
-            return self.audio_provider.generate_audio(
+        async def _gen_audio(text_):
+            return await self.audio_provider.generate_audio(
                 text=text_,
                 speaker_id=turn.speaker.speaker_id,
                 context=context,
@@ -287,14 +302,7 @@ class ConvoManager(ConvoTextMixin):
         text = initial_text
         speaker = initial_speaker
 
-        # allow for the number of turns to be a count, a range, or an iterable
-        match num_turns:
-            case -1:
-                num_turns = count()
-            case int():
-                num_turns = range(num_turns)
-            case Iterable():
-                num_turns = num_turns
+        num_turns = self._get_turn_iter(num_turns)
 
         for t_idx in num_turns:
             turn = await self.generate_turn(
@@ -318,8 +326,10 @@ class ConvoManangerQueue(ConvoManager):
         self.audio_queue = asyncio.Queue()
         self.text_queue = asyncio.Queue()
 
-    async def text_producer(self):
-        for turn in range(self.num_turns):
+    async def text_producer(self, num_turns: int | Iterable):
+        num_turns = self._get_turn_iter(num_turns)
+
+        for turn in num_turns:
             speaker = self.select_next_speaker()
 
             convo_system_prompt = simulator_system_prompt.format(
@@ -334,32 +344,46 @@ class ConvoManangerQueue(ConvoManager):
 
             turn = ConvoTurn(speaker=speaker, text=text)
 
-            print(f"Generated {turn.turn_idx} in text queue: {turn.text[0:10]}")
             await self.text_queue.put(turn)
+            info(f"Generated text for turn {turn.turn_idx}")
 
         await self.text_queue.put(None)
 
-    async def audio_producer(self):
-        max_audio_length_ms = 90_000
+    async def audio_producer(self, max_audio_length_ms: int = 90_000, to_thread: bool = True):
         while True:
             turn = await self.text_queue.get()
 
             if turn is None:
                 break
 
-            audio = self.audio_provider.generate_audio(
+            func = self.audio_provider.sync_generate_audio
+            if to_thread:
+
+                def pfunc(text, speaker_id, context, max_audio_length_ms):
+                    return asyncio.to_thread(func, text, speaker_id, context, max_audio_length_ms)
+
+                func = pfunc
+
+            debug(f">>Got text for turn {turn.turn_idx}")
+
+            audio = func(
                 text=turn.text,
                 speaker_id=turn.speaker.speaker_id,
                 context=self.context_queue,
                 max_audio_length_ms=max_audio_length_ms,
             )
-            print(f"||Generated audio for turn {turn.turn_idx}")
 
-    async def run(self, num_turns: int = 3, initial_text: str | None = None, **kwargs):
-        self.num_turns = num_turns
+            if isinstance(audio, Coroutine):
+                audio = await audio
+
+            debug(f"Generated audio for turn {turn.turn_idx} {len(audio)=}")
+            await self.audio_queue.put(audio)
+
+    async def run(self, num_turns: int = 3, initial_text: str | None = None, to_thread: bool = False, **kwargs):
         self.initial_text = initial_text
+        info(f"Running with {num_turns} turns, {to_thread=}")
 
         await asyncio.gather(
-            self.text_producer(),
-            self.audio_producer(),
+            self.text_producer(num_turns=num_turns),
+            self.audio_producer(to_thread=to_thread),
         )
