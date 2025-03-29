@@ -314,7 +314,7 @@ class ConvoManager(ConvoTextMixin):
                 do_audio_generate=do_audio_generate,
                 max_audio_length_ms=max_audio_length_ms,
             )
-            turn.turn_idx = t_idx
+            turn.turn_id = t_idx
             yield turn
             # reset the phrase and speaker for the next turn
             text = None
@@ -352,7 +352,7 @@ class ConvoManangerQueue(ConvoManager):
             turn = ConvoTurn(speaker=speaker, text=text)
 
             await self.text_done_queue.put(turn)
-            info(f"Generated text for turn {turn.turn_idx}")
+            info(f"Generated text for turn {turn.turn_id}")
 
         await self.text_done_queue.put(None)
 
@@ -383,7 +383,7 @@ class ConvoManangerQueue(ConvoManager):
 
             turn = self._post_turn(turn, save_audio=save_audio)
             await self.audio_gen_queue.put(turn)
-            debug(f"Generated audio for turn: {turn.turn_idx} {len(turn.audio)=}")  # type: ignore
+            debug(f"Generated audio for turn: {turn.turn_id} {len(turn.audio)=}")  # type: ignore
         info("Audio Producer Done")
 
     async def audio_producer_with_pool(
@@ -403,7 +403,7 @@ class ConvoManangerQueue(ConvoManager):
                 max_audio_length_ms,
             )
 
-            debug(f"Audio future created for turn: {turn.turn_idx}")
+            debug(f"Audio future created for turn: {turn.turn_id}")
             # await self.audio_gen_queue.put(turn)
         info("AudioPool Producer Done")
 
@@ -419,7 +419,7 @@ class ConvoManangerQueue(ConvoManager):
 
             turn.audio = turn.audio.result()
             turn = self._post_turn(turn, save_audio=save_audio)
-            debug(f"Generated audio for turn: {turn.turn_idx} {len(turn.audio)=}")  # type: ignore
+            debug(f"Generated audio for turn: {turn.turn_id} {len(turn.audio)=}")  # type: ignore
 
             await self.audio_done_queue.put(turn)
 

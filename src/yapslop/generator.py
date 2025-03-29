@@ -1,16 +1,16 @@
-from functools import cache
+from typing import Sequence
 
 import torch
 import torchaudio
-
-from moshi.models import loaders
 from huggingface_hub import hf_hub_download
+from moshi.models import loaders
 
 from yapslop.convo_dto import Segment
 
-from csm.watermarking import CSM_1B_GH_WATERMARK, load_watermarker, watermark
+from csm.generator import Generator as CSMGenerator
+from csm.generator import load_llama3_tokenizer
 from csm.models import Model
-from csm.generator import load_llama3_tokenizer, Generator as CSMGenerator
+from csm.watermarking import CSM_1B_GH_WATERMARK, load_watermarker, watermark
 
 
 def _add_watermark(watermarker, audio: torch.Tensor, sample_rate: int) -> torch.Tensor:
@@ -20,6 +20,13 @@ def _add_watermark(watermarker, audio: torch.Tensor, sample_rate: int) -> torch.
     # If using CSM 1B in another application, use your own private key and keep it secret.
     audio, wm_sample_rate = watermark(watermarker, audio, sample_rate, CSM_1B_GH_WATERMARK)
     return torchaudio.functional.resample(audio, orig_freq=wm_sample_rate, new_freq=sample_rate)
+
+
+def _check_audio_vector(audio: torch.Tensor) -> bool:
+    if audio.ndim != 1:
+        # cant handle multi-channel and anyways cant use pad_sequence in that case
+        raise TypeError("Only 1D tensors are supported (i think)")
+    return True
 
 
 class Generator(CSMGenerator):
@@ -73,10 +80,10 @@ class Generator(CSMGenerator):
             padding=True,
             **kwargs,
         ).input_ids
-        text_frame = torch.zeros(text_tokens.size(1), 33, device=self.device, dtype=torch.long)
-        text_frame[:, -1] = text_tokens
-        text_frame_mask = torch.zeros(text_tokens.size(1), 33, device=self.device, dtype=torch.bool)
-        text_frame_mask[:, -1] = True
+        text_frame = torch.zeros(*text_tokens.shape[:2], 33, device=self.device, dtype=torch.long)
+        text_frame[..., -1] = text_tokens
+        text_frame_mask = torch.zeros(*text_tokens.shape[:2], 33, device=self.device, dtype=torch.bool)
+        text_frame_mask[..., -1] = True
 
         return text_frame, text_frame_mask
 
@@ -100,6 +107,43 @@ class Generator(CSMGenerator):
 
         text_tokens, text_masks = torch.cat(frame_tokens, dim=0), torch.cat(frame_masks, dim=0)
         return text_tokens, text_masks
+
+    def _combine_audio_tensors(self, *audios: Sequence[torch.Tensor], padding_value: int | float = 0) -> torch.Tensor:
+        """
+        Combine a list of audio tensors into a single tensor, allow for uneven length tensors
+        """
+
+        # if multi-channel will want to make it like `audio[None, :] for audio`
+        audios = [aud for aud in audios if _check_audio_vector(aud)]
+
+        comb = torch.nn.utils.rnn.pad_sequence(audios, batch_first=True, padding_value=padding_value)
+        if comb.ndim == 2:
+            comb = comb.unsqueeze(1)
+        return comb
+
+    def _tokenize_audio_fast(self, audio: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        # only doing single audio for now, need to look at how moshi model works
+
+        audio = audio.to(self.device)
+        if audio.ndim == 1:
+            audio = audio[None, None, :]
+        elif audio.ndim == 2:
+            audio = audio.unsqueeze(1)
+        else:
+            raise ValueError(f"Audio tensor must be 1D or 2D, got {audio.ndim}D")
+
+        audio_tokens = self._audio_tokenizer.encode(audio)
+        audio_tokens = audio_tokens[0]
+
+        eos_frame = torch.zeros(audio_tokens.size(0), 1).to(self.device)
+        audio_tokens = torch.cat([audio_tokens, eos_frame], dim=1)
+
+        audio_frame = torch.zeros(audio_tokens.size(1), 33, device=self.device, dtype=torch.long)
+        audio_frame_mask = torch.zeros(audio_tokens.size(1), 33, device=self.device, dtype=torch.bool)
+        audio_frame[:, :-1] = audio_tokens.transpose(0, 1)
+        audio_frame_mask[:, :-1] = True
+
+        return audio_frame, audio_frame_mask
 
     def _tokenize_audio(self, audio: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         frame_tokens = []

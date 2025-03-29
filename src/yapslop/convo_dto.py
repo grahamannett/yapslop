@@ -1,18 +1,24 @@
 from functools import cached_property, cache
 
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import ClassVar
 
 import torch
 import torchaudio
 
 
-@cache
+@cache  # cant @cache with kwargs
 def _load_segment_audio(
     audio_path: str,
     new_freq: int = 24_000,
-    load_kwargs: dict = {},
-    resample_kwargs: dict = {},
+    normalize: bool = True,
+    channels_first: bool = True,
+    buffer_size: int = 4096,
+    lowpass_filter_width: int = 6,
+    rolloff: float = 0.99,
+    resampling_method: str = "sinc_interp_hann",
+    beta: float | None = None,
 ) -> torch.Tensor:
     """
     Load audio from a file path and resample it to the specified frequency.
@@ -28,12 +34,21 @@ def _load_segment_audio(
         torch.Tensor: Resampled audio tensor with shape (num_samples,)
     """
 
-    audio_tensor, sample_rate = torchaudio.load(audio_path, **load_kwargs)
+    audio_tensor, sample_rate = torchaudio.load(
+        audio_path,
+        normalize=normalize,
+        channels_first=channels_first,
+        buffer_size=buffer_size,
+    )
+
     return torchaudio.functional.resample(
         waveform=audio_tensor.squeeze(0),
         orig_freq=sample_rate,
         new_freq=new_freq,
-        **resample_kwargs,
+        lowpass_filter_width=lowpass_filter_width,
+        rolloff=rolloff,
+        resampling_method=resampling_method,
+        beta=beta,
     )
 
 
@@ -50,6 +65,11 @@ class Segment:
 
     def __hash__(self) -> int:
         return hash((self.speaker, self.text))
+
+    # @classmethod
+    # def from_audio_path(cls, audio_path: str, speaker: int, text: str) -> "Segment":
+    #     audio = _load_segment_audio(audio_path)
+    #     return cls(speaker=speaker, text=text, audio=audio)
 
 
 class ClassSequentialID:
@@ -126,17 +146,65 @@ class ConvoTurnID(ClassSequentialID):
 
 
 @dataclass
-class ConvoTurn:
+class BaseConvoTurn:
+    speaker: Speaker
+    text: str | None = None
+    audio: torch.Tensor | None = None
+    audio_path: str | None = None
+    turn_id: int | None = None
+
+    @classmethod
+    def from_audio_path(
+        cls,
+        audio_path: str,
+        text: str = "",
+        speaker: Speaker | None = None,
+        path_has_info: bool = True,
+    ) -> "BaseConvoTurn":
+        """
+        Create a BaseConvoTurn from an audio file path. If path_has_info is True, parse the turn and speaker info from the file name.
+
+        Args:
+            audio_path (str): Path to the audio file, expected to contain turn and speaker info (e.g. '.../turn_3_speaker_0.wav').
+            text (str | None): Optional text.
+            speaker (Speaker | None): Optional Speaker instance. If not provided, will be created from parsed info or must be provided if path_has_info is False.
+            path_has_info (bool): If True, attempt to parse turn and speaker info from audio_path.
+
+        Returns:
+            BaseConvoTurn: An instance with audio loaded, and parsed turn_id and speaker if available.
+        """
+        turn_id = 0
+        if path_has_info:
+            parts = Path(audio_path).stem.split("_")
+
+            for idx, part in enumerate(parts):
+                if part == "turn":
+                    turn_id = int(parts[idx + 1])
+                elif part == "speaker":
+                    speaker_id = int(parts[idx + 1])
+
+            if speaker is None:
+                speaker = Speaker(name=f"Speaker {speaker_id}", description="", speaker_id=speaker_id)
+
+        if speaker is None:
+            raise ValueError("Speaker must be provided if not parsed from path")
+
+        return cls(
+            speaker=speaker,
+            text=text,
+            audio=_load_segment_audio(audio_path),
+            audio_path=audio_path,
+            turn_id=turn_id,
+        )
+
+
+@dataclass
+class ConvoTurn(BaseConvoTurn):
     """
     Represents a single turn in a conversation.
     """
 
-    speaker: Speaker
-    text: str | None = None
-    # Add audio field to store generated audio
-    audio: torch.Tensor | None = None
-    audio_path: str | None = None
-    turn_idx: int = field(default_factory=ConvoTurnID.get_next_id)
+    turn_id: int = field(default_factory=ConvoTurnID.get_next_id)
 
     def __str__(self) -> str:
         # return f"{self.speaker.name}: {self.text}"
